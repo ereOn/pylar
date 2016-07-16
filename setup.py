@@ -22,6 +22,7 @@ Pylar is an experiment on micro-services.
     ]),
     install_requires=[
         'azmq[csodium]>=1.0.0,<2',
+        'chromalog>=1.0.5,<2',
         'click>=6.6,<7',
     ],
     test_suite='tests',
@@ -36,6 +37,7 @@ Pylar is an experiment on micro-services.
     entry_points={
         'console_scripts': [
             'pylar-broker = pylar.entry_points:broker',
+            'pylar-service = pylar.entry_points:service',
         ],
     },
 )

@@ -3,13 +3,25 @@ Entry-points.
 """
 
 import asyncio
+import chromalog
 import click
+import logging
 import signal
 import sys
 
+from azmq import Context
 from contextlib import contextmanager
 
 from .broker import Broker
+
+
+def setup_logging():
+    chromalog.basicConfig(
+        level=logging.DEBUG,
+        format='[%(levelname)s] %(message)s',
+    )
+    logging.getLogger('asyncio').setLevel(logging.WARNING)
+    logging.getLogger('azmq').setLevel(logging.WARNING)
 
 
 if sys.platform == 'win32':
@@ -25,6 +37,9 @@ def set_event_loop():
     loop = LoopClass()
     asyncio.set_event_loop(loop)
     return loop
+
+
+DEFAULT_ENDPOINT = 'tcp://127.0.0.1:3333'
 
 
 @contextmanager
@@ -68,15 +83,40 @@ def allow_interruption(*callbacks):
 
 
 @click.command()
-def broker():
-    loop = set_event_loop()
-    broker = Broker(loop=loop)
+@click.argument('endpoints', nargs=-1, metavar='endpoint...')
+def broker(endpoints):
+    setup_logging()
 
-    click.echo("Broker started.")
+    if not endpoints:
+        endpoints = [
+            DEFAULT_ENDPOINT,
+        ]
+
+    loop = set_event_loop()
+    context = Context(loop=loop)
+    broker = Broker(context=context, endpoints=endpoints, loop=loop)
+
+    click.echo("Broker started on: %s." % ', '.join(endpoints))
 
     with allow_interruption(
-        (loop, broker.close),
+        (loop, context.close),
     ):
-        loop.run_until_complete(broker.wait_closed())
+        loop.run_until_complete(context.wait_closed())
 
     click.echo("Broker stopped.")
+
+
+@click.command()
+@click.argument('endpoint', default=DEFAULT_ENDPOINT)
+def service(endpoint):
+    loop = set_event_loop()
+    context = Context(loop=loop)
+
+    click.echo("Service started connected to: %s." % endpoint)
+
+    with allow_interruption(
+        (loop, context.close),
+    ):
+        loop.run_until_complete(context.wait_closed())
+
+    click.echo("Service stopped.")
