@@ -4,6 +4,7 @@ A client class.
 
 
 import asyncio
+import json
 
 from azmq.common import AsyncTaskObject
 from itertools import count
@@ -62,13 +63,23 @@ class Client(AsyncTaskObject):
         return raise_on_error(command=command, reply=reply)
 
     async def register(self, service_name):
-        return await self._request(
+        await self._request(
             b'register',
             service_name.encode('utf-8'),
         )
 
     async def unregister(self, service_name):
-        return await self._request(
+        await self._request(
             b'unregister',
             service_name.encode('utf-8'),
         )
+
+    async def call(self, service_name, method, args=None, kwargs=None):
+        reply = await self._request(
+            b'call',
+            service_name.encode('utf-8'),
+            method.encode('utf-8'),
+            json.dumps(args or [], separators=(',', ':')).encode('utf-8'),
+            json.dumps(kwargs or {}, separators=(',', ':')).encode('utf-8'),
+        )
+        return json.loads(reply[0].decode('utf-8'))

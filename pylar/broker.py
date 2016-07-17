@@ -6,6 +6,7 @@ A broker class.
 import asyncio
 import azmq
 import logging
+import json
 
 from azmq.common import (
     AsyncTaskObject,
@@ -63,6 +64,9 @@ class ClientInfo(ClosableAsyncObject):
         task.add_done_callback(self._pending_tasks.remove)
         self._pending_tasks.add(task)
 
+    def refresh(self):
+        self._timeout.revive()
+
     @property
     def services(self):
         return self._services
@@ -110,6 +114,7 @@ class Broker(AsyncTaskObject):
         self._command_handlers = {
             b'register': self._register,
             b'unregister': self._unregister,
+            b'call': self._call,
         }
         self._services = {}
 
@@ -327,3 +332,19 @@ class Broker(AsyncTaskObject):
         service_name = frames.pop(0)
         client_info.unregister_service(service_name)
         self._unregister_service_client(service_name, client)
+
+    async def _call(
+        self,
+        client,
+        client_info,
+        request_id,
+        command,
+        frames,
+    ):
+        service_name = frames.pop(0)
+        method = frames.pop(0)
+        args = json.loads(frames.pop(0).decode('utf-8'))
+        kwargs = json.loads(frames.pop(0).decode('utf-8'))
+        print(service_name, method, args, kwargs)
+        result = None
+        return [json.dumps(result, separators=(',', ':')).encode('utf-8')]
