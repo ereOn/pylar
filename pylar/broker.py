@@ -14,6 +14,7 @@ from azmq.common import (
 )
 from azmq.multiplexer import Multiplexer
 from binascii import hexlify
+from collections import deque
 from functools import partial
 
 from .errors import (
@@ -55,11 +56,22 @@ class ClientInfo(ClosableAsyncObject):
             loop=self.loop,
         )
         self._pending_tasks = set()
+        self._services = set()
 
     def enqueue(self, coro):
         task = asyncio.ensure_future(coro, loop=self.loop)
         task.add_done_callback(self._pending_tasks.remove)
         self._pending_tasks.add(task)
+
+    @property
+    def services(self):
+        return self._services
+
+    def register_service(self, service_name):
+        self._services.add(service_name)
+
+    def unregister_service(self, service_name):
+        self._services.remove(service_name)
 
     async def on_close(self):
         tasks = list(self._pending_tasks)
@@ -99,6 +111,7 @@ class Broker(AsyncTaskObject):
             b'register': self._register,
             b'unregister': self._unregister,
         }
+        self._services = {}
 
     async def on_close(self):
         client_infos = list(self._client_infos.values())
@@ -136,6 +149,7 @@ class Broker(AsyncTaskObject):
                 client_info.enqueue(
                     self._process_message(
                         client=client,
+                        client_info=client_info,
                         frames=frames,
                     ),
                 )
@@ -167,9 +181,12 @@ class Broker(AsyncTaskObject):
         client_info = self._client_infos.pop(client)
         logger.debug("Client %s disconnected.", client)
 
+        for service_name in client_info.services:
+            self._unregister_service_client(service_name, client)
+
         return client_info
 
-    async def _process_message(self, client, frames):
+    async def _process_message(self, client, client_info, frames):
         try:
             request_id = frames.pop(0)
             command = frames.pop(0)
@@ -182,6 +199,7 @@ class Broker(AsyncTaskObject):
             try:
                 reply = await handler(
                     client,
+                    client_info,
                     request_id,
                     command,
                     frames,
@@ -245,8 +263,67 @@ class Broker(AsyncTaskObject):
                 ),
             )
 
-    async def _register(self, client, request_id, command, frames):
-        pass
+    def _register_service_client(self, service_name, client):
+        clients = self._services.get(service_name)
 
-    async def _unregister(self, client, request_id, command, frames):
-        pass
+        if not clients:
+            self._services[service_name] = deque([client])
+            logger.debug(
+                "New service available: %s.",
+                service_name.decode('utf-8'),
+            )
+        else:
+            if client not in clients:
+                clients.append(client)
+
+        logger.debug(
+            "Service %s registered for client %s.",
+            service_name.decode('utf-8'),
+            client,
+        )
+
+    def _unregister_service_client(self, service_name, client):
+        clients = self._services.get(service_name)
+
+        if clients:
+            try:
+                clients.remove(client)
+            except ValueError:
+                pass
+            else:
+                logger.debug(
+                    "Service %s unregistered for client %s.",
+                    service_name.decode('utf-8'),
+                    client,
+                )
+
+                if not clients:
+                    logger.debug(
+                        "Service became unavailable: %s.",
+                        service_name.decode('utf-8'),
+                    )
+                    del self._services[service_name]
+
+    async def _register(
+        self,
+        client,
+        client_info,
+        request_id,
+        command,
+        frames,
+    ):
+        service_name = frames.pop(0)
+        self._register_service_client(service_name, client)
+        client_info.register_service(service_name)
+
+    async def _unregister(
+        self,
+        client,
+        client_info,
+        request_id,
+        command,
+        frames,
+    ):
+        service_name = frames.pop(0)
+        client_info.unregister_service(service_name)
+        self._unregister_service_client(service_name, client)

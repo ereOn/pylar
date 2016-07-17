@@ -67,7 +67,8 @@ class Client(AsyncTaskObject):
             service_name.encode('utf-8'),
         )
 
-    async def unregister(self):
+    async def unregister(self, service_name):
         return await self._request(
             b'unregister',
+            service_name.encode('utf-8'),
         )
