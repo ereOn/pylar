@@ -3,6 +3,7 @@ Entry-points.
 """
 
 import asyncio
+import azmq
 import chromalog
 import click
 import logging
@@ -94,7 +95,14 @@ def broker(endpoints):
 
     loop = set_event_loop()
     context = Context(loop=loop)
-    broker = Broker(context=context, endpoints=endpoints, loop=loop)
+    sockets = []
+
+    for endpoint in endpoints:
+        socket = context.socket(azmq.ROUTER)
+        socket.bind(endpoint)
+        sockets.append(socket)
+
+    broker = Broker(context=context, sockets=sockets, loop=loop)
 
     click.echo("Broker started on: %s." % ', '.join(endpoints))
 
