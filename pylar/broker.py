@@ -151,13 +151,28 @@ class Broker(AsyncTaskObject):
 
                 client = Client(socket=socket, identity=identity)
                 client_info = self._refresh(client)
-                client_info.enqueue(
-                    self._process_message(
-                        client=client,
-                        client_info=client_info,
-                        frames=frames,
-                    ),
-                )
+
+                try:
+                    type_ = frames.pop(0)
+                except IndexError:
+                    continue
+
+                if type_ == b'out':
+                    client_info.enqueue(
+                        self._process_request(
+                            client=client,
+                            client_info=client_info,
+                            frames=frames,
+                        ),
+                    )
+                elif type_ == b'in':
+                    client_info.enqueue(
+                        self._process_response(
+                            client=client,
+                            client_info=client_info,
+                            frames=frames,
+                        ),
+                    )
 
     def _refresh(self, client):
         client_info = self._client_infos.get(client)
@@ -191,7 +206,7 @@ class Broker(AsyncTaskObject):
 
         return client_info
 
-    async def _process_message(self, client, client_info, frames):
+    async def _process_request(self, client, client_info, frames):
         try:
             request_id = frames.pop(0)
             command = frames.pop(0)
@@ -214,6 +229,7 @@ class Broker(AsyncTaskObject):
                     [
                         client.identity,
                         b'',
+                        b'out',
                         request_id,
                         b'200',
                     ] + reply,
@@ -223,6 +239,7 @@ class Broker(AsyncTaskObject):
                     [
                         client.identity,
                         b'',
+                        b'out',
                         request_id,
                     ] + make_error_frames(
                         code=ex.code,
@@ -234,6 +251,7 @@ class Broker(AsyncTaskObject):
                     [
                         client.identity,
                         b'',
+                        b'out',
                         request_id,
                     ] + make_error_frames(
                         code=503,
@@ -250,6 +268,7 @@ class Broker(AsyncTaskObject):
                     [
                         client.identity,
                         b'',
+                        b'out',
                         request_id,
                     ] + make_error_frames(
                         code=500,
@@ -261,12 +280,20 @@ class Broker(AsyncTaskObject):
                 [
                     client.identity,
                     b'',
+                    b'out',
                     request_id,
                 ] + make_error_frames(
                     code=404,
                     message="Unknown command.",
                 ),
             )
+
+    async def _process_response(self, client, client_info, frames):
+        try:
+            request_id = frames.pop(0)
+            command = frames.pop(0)
+        except IndexError:
+            return
 
     def _register_service_client(self, service_name, client):
         clients = self._services.get(service_name)
@@ -342,9 +369,24 @@ class Broker(AsyncTaskObject):
         frames,
     ):
         service_name = frames.pop(0)
-        method = frames.pop(0)
-        args = json.loads(frames.pop(0).decode('utf-8'))
-        kwargs = json.loads(frames.pop(0).decode('utf-8'))
-        print(service_name, method, args, kwargs)
-        result = None
-        return [json.dumps(result, separators=(',', ':')).encode('utf-8')]
+        service_clients = self._services.get(service_name)
+
+        if not service_clients:
+            raise CallError(
+                code=404,
+                message="No such service.",
+            )
+
+        service_client = service_clients[0]
+        service_clients.rotate(-1)
+
+        await service_client.socket.send_multipart([
+            service_client.identity,
+            b'',
+            b'in',
+            client.identity,
+            request_id,
+        ] + frames)
+
+        result = json.dumps(None, separators=(',', ':')).encode('utf-8')
+        return [result]
