@@ -1,6 +1,7 @@
 import asyncio
 import azmq
 
+from pylar.entry_points import set_event_loop
 from pylar.client import Client
 
 
@@ -19,6 +20,5 @@ async def run():
 
 
 if __name__ == '__main__':
-    loop = asyncio.SelectorEventLoop()
-    asyncio.set_event_loop(loop)
+    loop = set_event_loop()
     loop.run_until_complete(run())
