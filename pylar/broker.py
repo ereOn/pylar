@@ -17,6 +17,7 @@ from azmq.multiplexer import Multiplexer
 from binascii import hexlify
 from collections import deque
 from functools import partial
+from itertools import count
 
 from .errors import (
     CallError,
@@ -39,30 +40,14 @@ class Client(ClosableAsyncObject):
         )
         self._pending_tasks = set()
         self._services = set()
+        self._request_id_generator = count()
+        self._pending_requests = {}
 
     def __str__(self):
         return '%x-%s' % (
             id(self.socket),
             hexlify(self.identity).decode('utf-8'),
         )
-
-    def enqueue(self, coro):
-        task = asyncio.ensure_future(coro, loop=self.loop)
-        task.add_done_callback(self._pending_tasks.remove)
-        self._pending_tasks.add(task)
-
-    def refresh(self):
-        self._timeout.revive()
-
-    @property
-    def services(self):
-        return self._services
-
-    def register_service(self, service_name):
-        self._services.add(service_name)
-
-    def unregister_service(self, service_name):
-        self._services.remove(service_name)
 
     async def on_close(self):
         tasks = list(self._pending_tasks)
@@ -84,6 +69,38 @@ class Client(ClosableAsyncObject):
         self._timeout.close()
         await self._timeout.wait_closed()
         await super().on_close()
+
+    def enqueue(self, coro):
+        task = asyncio.ensure_future(coro, loop=self.loop)
+        task.add_done_callback(self._pending_tasks.remove)
+        self._pending_tasks.add(task)
+
+    def refresh(self):
+        self._timeout.revive()
+
+    @property
+    def services(self):
+        return self._services
+
+    def register_service(self, service_name):
+        self._services.add(service_name)
+
+    def unregister_service(self, service_name):
+        self._services.remove(service_name)
+
+    def get_request_id(self):
+        return ('%s' % next(self._request_id_generator)).encode('utf-8')
+
+    async def request(self, command, *args):
+        request_id = self.get_request_id()
+
+        await self.socket.send_multipart([
+            self.identity,
+            b'',
+            b'service',
+            request_id,
+            command,
+        ] + list(args))
 
 
 class Broker(AsyncTaskObject):
@@ -365,13 +382,7 @@ class Broker(AsyncTaskObject):
         service_client = service_clients[0]
         service_clients.rotate(-1)
 
-        await service_client.socket.send_multipart([
-            service_client.identity,
-            b'',
-            b'service',
-            client.identity,
-            request_id,
-        ] + frames)
-
-        result = json.dumps(None, separators=(',', ':')).encode('utf-8')
-        return [result]
+        return await service_client.request(
+            b'call',
+            *frames,
+        )

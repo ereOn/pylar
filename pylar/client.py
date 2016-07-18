@@ -53,7 +53,7 @@ class Client(AsyncTaskObject):
     def get_request_id(self):
         return ('%s' % next(self._request_id_generator)).encode('utf-8')
 
-    async def _request(self, command, *args):
+    async def request(self, command, *args):
         request_id = self.get_request_id()
 
         await self.socket.send_multipart((
@@ -76,19 +76,19 @@ class Client(AsyncTaskObject):
         return raise_on_error(command=command, reply=reply)
 
     async def register(self, service_name):
-        await self._request(
+        await self.request(
             b'register',
             service_name.encode('utf-8'),
         )
 
     async def unregister(self, service_name):
-        await self._request(
+        await self.request(
             b'unregister',
             service_name.encode('utf-8'),
         )
 
     async def call(self, service_name, method, args=None, kwargs=None):
-        reply = await self._request(
+        reply = await self.request(
             b'call',
             service_name.encode('utf-8'),
             method.encode('utf-8'),
