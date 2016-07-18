@@ -27,30 +27,11 @@ from .log import logger as main_logger
 logger = main_logger.getChild('broker')
 
 
-class Client(object):
-    def __init__(self, socket, identity):
+class Client(ClosableAsyncObject):
+    def __init__(self, *, socket, identity, timeout, **kwargs):
+        super().__init__(**kwargs)
         self.socket = socket
         self.identity = identity
-
-    def __str__(self):
-        return '%x-%s' % (
-            id(self.socket),
-            hexlify(self.identity).decode('utf-8'),
-        )
-
-    def __hash__(self):
-        return hash((id(self.socket), self.identity))
-
-    def __eq__(self, other):
-        return self.socket == other.socket and self.identity == other.identity
-
-    def __ne__(self, other):
-        return not self == other
-
-
-class ClientInfo(ClosableAsyncObject):
-    def __init__(self, *, timeout, **kwargs):
-        super().__init__(**kwargs)
         self._timeout = AsyncTimeout(
             timeout=timeout,
             callback=self.close,
@@ -58,6 +39,12 @@ class ClientInfo(ClosableAsyncObject):
         )
         self._pending_tasks = set()
         self._services = set()
+
+    def __str__(self):
+        return '%x-%s' % (
+            id(self.socket),
+            hexlify(self.identity).decode('utf-8'),
+        )
 
     def enqueue(self, coro):
         task = asyncio.ensure_future(coro, loop=self.loop)
@@ -110,7 +97,7 @@ class Broker(AsyncTaskObject):
             self._multiplexer.add_socket(socket)
 
         self._client_timeout = 5.0
-        self._client_infos = {}
+        self._clients = {}
         self._command_handlers = {
             b'register': self._register,
             b'unregister': self._unregister,
@@ -119,21 +106,21 @@ class Broker(AsyncTaskObject):
         self._services = {}
 
     async def on_close(self):
-        client_infos = list(self._client_infos.values())
+        clients = list(self._clients.values())
 
-        if client_infos:
+        if clients:
             logger.warning(
                 "Force-disconnecting %d client(s) for shut-down.",
-                len(client_infos),
+                len(clients),
             )
 
-            for client_info in client_infos:
-                client_info.close()
+            for client in clients:
+                client.close()
 
             await asyncio.gather(
                 *[
-                    client_info.wait_closed()
-                    for client_info in client_infos
+                    client.wait_closed()
+                    for client in clients
                 ],
                 return_exceptions=True,
                 loop=self.loop,
@@ -149,64 +136,66 @@ class Broker(AsyncTaskObject):
                 identity = frames.pop(0)
                 frames.pop(0)
 
-                client = Client(socket=socket, identity=identity)
-                client_info = self._refresh(client)
+                client = self._refresh(socket=socket, identity=identity)
 
                 try:
                     type_ = frames.pop(0)
                 except IndexError:
                     continue
 
-                if type_ == b'out':
-                    client_info.enqueue(
+                if type_ == b'broker':
+                    client.enqueue(
                         self._process_request(
                             client=client,
-                            client_info=client_info,
                             frames=frames,
                         ),
                     )
-                elif type_ == b'in':
-                    client_info.enqueue(
+                elif type_ == b'service':
+                    client.enqueue(
                         self._process_response(
                             client=client,
-                            client_info=client_info,
                             frames=frames,
                         ),
                     )
 
-    def _refresh(self, client):
-        client_info = self._client_infos.get(client)
+    def _refresh(self, *, socket, identity):
+        client = self._clients.get((socket, identity))
 
-        if client_info:
-            client_info.refresh()
+        if client:
+            client.refresh()
         else:
-            client_info = self._connect_client(client)
+            client = self._connect_client(socket=socket, identity=identity)
 
-        return client_info
+        return client
 
-    def _connect_client(self, client):
-        client_info = ClientInfo(
+    def _connect_client(self, *, socket, identity):
+        client = Client(
+            socket=socket,
+            identity=identity,
             timeout=self._client_timeout,
             loop=self.loop,
         )
-        client_info.on_closed.connect(
-            lambda _: self._disconnect_client(client),
+        client.on_closed.connect(
+            lambda _: self._disconnect_client(
+                socket=socket,
+                identity=identity,
+            ),
         )
-        self._client_infos[client] = client_info
+        self._clients[(socket, identity)] = client
         logger.debug("Client %s connected.", client)
 
-        return client_info
+        return client
 
-    def _disconnect_client(self, client):
-        client_info = self._client_infos.pop(client)
+    def _disconnect_client(self, *, socket, identity):
+        client = self._clients.pop((socket, identity))
         logger.debug("Client %s disconnected.", client)
 
-        for service_name in client_info.services:
+        for service_name in client.services:
             self._unregister_service_client(service_name, client)
 
-        return client_info
+        return client
 
-    async def _process_request(self, client, client_info, frames):
+    async def _process_request(self, client, frames):
         try:
             request_id = frames.pop(0)
             command = frames.pop(0)
@@ -219,7 +208,6 @@ class Broker(AsyncTaskObject):
             try:
                 reply = await handler(
                     client,
-                    client_info,
                     request_id,
                     command,
                     frames,
@@ -229,7 +217,7 @@ class Broker(AsyncTaskObject):
                     [
                         client.identity,
                         b'',
-                        b'out',
+                        b'broker',
                         request_id,
                         b'200',
                     ] + reply,
@@ -239,7 +227,7 @@ class Broker(AsyncTaskObject):
                     [
                         client.identity,
                         b'',
-                        b'out',
+                        b'broker',
                         request_id,
                     ] + make_error_frames(
                         code=ex.code,
@@ -251,7 +239,7 @@ class Broker(AsyncTaskObject):
                     [
                         client.identity,
                         b'',
-                        b'out',
+                        b'broker',
                         request_id,
                     ] + make_error_frames(
                         code=503,
@@ -268,7 +256,7 @@ class Broker(AsyncTaskObject):
                     [
                         client.identity,
                         b'',
-                        b'out',
+                        b'broker',
                         request_id,
                     ] + make_error_frames(
                         code=500,
@@ -280,7 +268,7 @@ class Broker(AsyncTaskObject):
                 [
                     client.identity,
                     b'',
-                    b'out',
+                    b'broker',
                     request_id,
                 ] + make_error_frames(
                     code=404,
@@ -288,7 +276,7 @@ class Broker(AsyncTaskObject):
                 ),
             )
 
-    async def _process_response(self, client, client_info, frames):
+    async def _process_response(self, client, frames):
         try:
             request_id = frames.pop(0)
             command = frames.pop(0)
@@ -300,7 +288,7 @@ class Broker(AsyncTaskObject):
 
         if not clients:
             self._services[service_name] = deque([client])
-            logger.debug(
+            logger.info(
                 "New service available: %s.",
                 service_name.decode('utf-8'),
             )
@@ -330,7 +318,7 @@ class Broker(AsyncTaskObject):
                 )
 
                 if not clients:
-                    logger.debug(
+                    logger.info(
                         "Service became unavailable: %s.",
                         service_name.decode('utf-8'),
                     )
@@ -339,31 +327,28 @@ class Broker(AsyncTaskObject):
     async def _register(
         self,
         client,
-        client_info,
         request_id,
         command,
         frames,
     ):
         service_name = frames.pop(0)
         self._register_service_client(service_name, client)
-        client_info.register_service(service_name)
+        client.register_service(service_name)
 
     async def _unregister(
         self,
         client,
-        client_info,
         request_id,
         command,
         frames,
     ):
         service_name = frames.pop(0)
-        client_info.unregister_service(service_name)
+        client.unregister_service(service_name)
         self._unregister_service_client(service_name, client)
 
     async def _call(
         self,
         client,
-        client_info,
         request_id,
         command,
         frames,
@@ -383,7 +368,7 @@ class Broker(AsyncTaskObject):
         await service_client.socket.send_multipart([
             service_client.identity,
             b'',
-            b'in',
+            b'service',
             client.identity,
             request_id,
         ] + frames)

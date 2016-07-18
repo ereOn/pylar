@@ -36,7 +36,7 @@ class Client(AsyncTaskObject):
             except IndexError:
                 continue
 
-            if type_ == b'out':
+            if type_ == b'broker':
                 try:
                     request_id = reply.pop(0)
                 except IndexError:
@@ -46,7 +46,7 @@ class Client(AsyncTaskObject):
 
                 if future:
                     future.set_result(reply)
-            elif type_ == b'in':
+            elif type_ == b'service':
                 print(reply)
 
 
@@ -58,7 +58,7 @@ class Client(AsyncTaskObject):
 
         await self.socket.send_multipart((
             b'',
-            b'out',
+            b'broker',
             request_id,
             command,
         ) + args)
