@@ -21,7 +21,7 @@ Pylar is an experiment on micro-services.
         'tests',
     ]),
     install_requires=[
-        'azmq[csodium]>=1.0.1,<2',
+        'azmq[csodium]>=1.0.2,<2',
         'chromalog>=1.0.5,<2',
         'click>=6.6,<7',
     ],

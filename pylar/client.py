@@ -10,6 +10,7 @@ from azmq.common import AsyncTaskObject
 from functools import partial
 from itertools import count
 
+from .common import Requester
 from .errors import raise_on_error
 
 
@@ -17,12 +18,13 @@ class Client(AsyncTaskObject):
     def __init__(self, *, socket, **kwargs):
         super().__init__(**kwargs)
         self.socket = socket
-        self._request_id_generator = count()
-        self._pending_requests = {}
+        self._requester = Requester(
+            loop=self.loop,
+            send_request_callback=self.__send_request,
+        )
 
     async def on_close(self):
-        for future in self._pending_requests.values():
-            future.cancel()
+        self._requester.cancel_pending_requests()
 
         await super().on_close()
 
@@ -32,48 +34,24 @@ class Client(AsyncTaskObject):
 
             try:
                 reply.pop(0)  # Empty frame.
-                type_ = reply.pop(0)
+                domain = reply.pop(0)
             except IndexError:
                 continue
 
-            if type_ == b'broker':
+            if domain == b'broker':
                 try:
                     request_id = reply.pop(0)
                 except IndexError:
                     continue
 
-                future = self._pending_requests.get(request_id)
+                self._requester.set_request_result(request_id, reply)
 
-                if future:
-                    future.set_result(reply)
-            elif type_ == b'service':
-                print(reply)
-
-
-    def get_request_id(self):
-        return ('%s' % next(self._request_id_generator)).encode('utf-8')
+            elif domain == b'service':
+                print("received", reply)
 
     async def request(self, command, *args):
-        request_id = self.get_request_id()
-
-        await self.socket.send_multipart((
-            b'',
-            b'broker',
-            request_id,
-            command,
-        ) + args)
-        future = asyncio.Future(loop=self.loop)
-
-        def request_done(_, client, request_id):
-            client._pending_requests.pop(request_id)
-
-        future.add_done_callback(
-            partial(request_done, client=self, request_id=request_id),
-        )
-
-        self._pending_requests[request_id] = future
-        reply = await future
-        return raise_on_error(command=command, reply=reply)
+        result = await self._requester.request(command, args)
+        return raise_on_error(command, result)
 
     async def register(self, service_name):
         await self.request(
@@ -95,4 +73,15 @@ class Client(AsyncTaskObject):
             json.dumps(args or [], separators=(',', ':')).encode('utf-8'),
             json.dumps(kwargs or {}, separators=(',', ':')).encode('utf-8'),
         )
+        print(reply)
         return json.loads(reply[0].decode('utf-8'))
+
+    # Private methods.
+
+    async def __send_request(self, command, args, *, request_id):
+        await self.socket.send_multipart((
+            b'',
+            b'broker',
+            request_id,
+            command,
+        ) + args)

@@ -5,6 +5,7 @@ Common class and utilities.
 import asyncio
 
 from itertools import count
+from functools import partial
 
 
 class Requester(object):
@@ -12,33 +13,51 @@ class Requester(object):
     Implements generic uniquely-identified requests.
     """
 
-    def __init__(self, *, loop):
+    def __init__(self, *, loop, send_request_callback):
         self.__loop = loop
+        self.__send_request_callback = send_request_callback
         self.__request_id_generator = count()
         self.__pending_requests = {}
 
-    async def send_request(self, request_id, **kwargs):
-        """
-        Effectively sends the request.
-
-        Must be defined by inheriting classes.
-        """
-        raise NotImplementedError
-
-    async def request(self, **kwargs):
+    async def request(self, *args, **kwargs):
         """
         Send a request and wait for the result.
 
         :returns: The request results.
         """
         request_id = self.__request_id()
-        await self.send_request(request_id, **kwargs)
+
+        await self.__send_request_callback(
+            *args,
+            request_id=request_id,
+            **kwargs
+        )
         future = asyncio.Future(loop=self.__loop)
         future.add_done_callback(
             partial(self.__remove_request, request_id=request_id),
         )
         self.__pending_requests[request_id] = future
         return await future
+
+    def cancel_pending_requests(self):
+        """
+        Cancel all pending requests.
+        """
+        for future in list(self.__pending_requests.values()):
+            future.cancel()
+
+    def cancel_request(self, request_id):
+        """
+        Cancel the specified request.
+
+        :param request_id: The request to cancel.
+        """
+        future = self.__pending_requests.get(request_id)
+        assert future, "No such active request: %s" % request_id
+        assert not future.done(), (
+            "Request %s's result was set already." % request_id
+        )
+        future.cancel()
 
     def set_request_result(self, request_id, result):
         """
