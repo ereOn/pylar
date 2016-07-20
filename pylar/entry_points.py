@@ -107,9 +107,12 @@ def broker(endpoints):
     click.echo("Broker started on: %s." % ', '.join(endpoints))
 
     with allow_interruption(
-        (loop, context.close),
+        (loop, broker.close),
     ):
-        loop.run_until_complete(context.wait_closed())
+        loop.run_until_complete(broker.wait_closed())
+
+    context.close()
+    loop.run_until_complete(context.wait_closed())
 
     click.echo("Broker stopped.")
 

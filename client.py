@@ -14,21 +14,25 @@ async def run():
                 client_a = Client(
                     socket=socket_a,
                     domain=(b'user', b'alice',),
-                    credentials=(),
                 )
                 client_b = Client(
                     socket=socket_b,
                     domain=(b'user', b'bob',),
-                    credentials=(),
                 )
-                await asyncio.wait_for(client_a.register(), 1)
-                await client_b.register()
-                r = await client_a.call(
-                    domain=(b'user', b'bob'),
-                    method='send_message',
-                    args=['hello'],
-                )
-                print(r)
+                try:
+                    await asyncio.wait_for(client_a.register(()), 1)
+                    await client_b.register(())
+                    r = await client_a.call(
+                        domain=(b'user', b'bob'),
+                        method='send_message',
+                        args=['hello'],
+                    )
+                    print(r)
+                finally:
+                    client_a.close()
+                    client_b.close()
+                    await client_a.wait_closed()
+                    await client_b.wait_closed()
 
 
 if __name__ == '__main__':

@@ -6,48 +6,42 @@ A broker class.
 import asyncio
 import azmq
 import logging
-import json
 
-from azmq.common import (
-    AsyncTaskObject,
-    AsyncTimeout,
-    ClosableAsyncObject,
-)
+from azmq.common import AsyncTimeout
 from azmq.multiplexer import Multiplexer
 from binascii import hexlify
 from collections import deque
 from functools import partial
-from itertools import (
-    chain,
-    count,
-)
 
-from .common import Requester
-from .errors import (
-    CallError,
-    raise_on_error,
-)
+from .async_object import AsyncObject
+from .errors import CallError
+from .generic_client import GenericClient
 from .log import logger as main_logger
 
 logger = main_logger.getChild('broker')
 
 
-class Connection(ClosableAsyncObject):
+class Connection(GenericClient):
     def __init__(self, *, socket, identity, timeout, **kwargs):
         super().__init__(**kwargs)
         self.socket = socket
         self.identity = identity
-        self.domain = None
-        self._timeout = AsyncTimeout(
+
+        # The receiving queue.
+        self.__queue = asyncio.Queue(loop=self.loop)
+        self._read = self.__queue.get
+
+        # The dying timer.
+        self.__timeout = AsyncTimeout(
             timeout=timeout,
             callback=self.close,
             loop=self.loop,
         )
-        self._pending_tasks = set()
-        self._requester = Requester(
-            loop=self.loop,
-            send_request_callback=self.__send_request,
-        )
+        self.add_cleanup(self.__timeout.close)
+        self.add_cleanup(self.__timeout.wait_closed)
+
+        # Public attributes.
+        self.domain = None
 
     def __str__(self):
         return '%x-%s' % (
@@ -55,90 +49,68 @@ class Connection(ClosableAsyncObject):
             hexlify(self.identity).decode('utf-8'),
         )
 
-    async def on_close(self):
-        self._requester.cancel_pending_requests()
-        tasks = list(self._pending_tasks)
-
-        if tasks:
-            logger.warning(
-                "Force-cancelling %d task(s) after disconnection.",
-                len(tasks),
-            )
-            for task in tasks:
-                task.cancel()
-
-            await asyncio.gather(
-                *tasks,
-                return_exceptions=True,
-                loop=self.loop,
-            )
-
-        self._timeout.close()
-        await self._timeout.wait_closed()
-        await super().on_close()
-
-    def enqueue(self, coro):
-        task = asyncio.ensure_future(coro, loop=self.loop)
-        task.add_done_callback(self._pending_tasks.remove)
-        self._pending_tasks.add(task)
-
     def refresh(self):
-        self._timeout.revive()
+        """
+        Resets the instance dying timer.
+        """
+        self.__timeout.revive()
 
-    async def request(self, *args):
-        result = await self._requester.request(args=chain(*args))
-        return raise_on_error(result)
+    async def receive(self, frames):
+        """
+        Receive frames.
 
-    async def response(self, request_id, code, args):
-        await self.socket.send_multipart([
-            self.identity,
-            b'',
-            b'response',
-            request_id,
-            ('%d' % code).encode('utf-8'),
-        ] + list(args))
+        :param frames: The frames to receive.
+        """
+        await self.__queue.put(frames)
 
-    async def error_response(self, request_id, code, message):
-        await self.response(
-            request_id,
-            code,
-            [message.encode('utf-8')],
-        )
+    async def _write(self, frames):
+        """
+        Write frames.
 
-    async def __send_request(self, *, request_id, args):
-        await self.socket.send_multipart([
-            self.identity,
-            b'',
-            b'request',
-            request_id,
-        ] + list(args))
+        :param frames: The frames to write.
+        """
+        frames.insert(0, b'')
+        frames.insert(0, self.identity)
+        await self.socket.send_multipart(frames)
+
+    async def _on_request(self, request_id, frames):
+        """
+        Called whenever a request is received.
+
+        :param request_id: A unique request id that must be sent back.
+        :param frames: The request frames.
+        :returns: A list of frames that constitute the reply.
+        """
+        return [b'42']
 
 
-class Broker(AsyncTaskObject):
+class Broker(AsyncObject):
     def __init__(self, *, context, sockets, **kwargs):
         super().__init__(**kwargs)
         self.context = context
-        self.context.register_child(self)
-        self._multiplexer = Multiplexer(loop=self.loop)
+        self.__multiplexer = Multiplexer(loop=self.loop)
 
         for socket in sockets:
-            self._multiplexer.add_socket(socket)
+            self.__multiplexer.add_socket(socket)
 
-        self._connection_timeout = 5.0
-        self._connections = {}
-        self._connections_by_domain = {}
-        self._command_handlers = {
+        self.__connection_timeout = 5.0
+        self.__connections = {}
+        self.__connections_by_domain = {}
+        self.__command_handlers = {
             b'register': self._register,
             b'unregister': self._unregister,
             b'call': self._call,
         }
 
-    async def on_close(self):
-        connections = list(self._connections.values())
+        self.add_cleanup(self.force_disconnections)
+        self.add_task(self.__receiving_loop())
+
+    async def force_disconnections(self):
+        connections = list(self.__connections.values())
 
         if connections:
             logger.warning(
-                "Force-disconnecting %d connection(s) for shut-down.",
+                "Force-disconnecting %d connection(s).",
                 len(connections),
             )
 
@@ -154,79 +126,7 @@ class Broker(AsyncTaskObject):
                 loop=self.loop,
             )
 
-        await super().on_close()
-
-    async def on_run(self):
-        while True:
-            pairs = await self._multiplexer.recv_multipart()
-
-            for socket, frames in pairs:
-                identity = frames.pop(0)
-                frames.pop(0)  # Empty frame.
-
-                connection = self._refresh_connection(
-                    socket=socket,
-                    identity=identity,
-                )
-
-                try:
-                    type_ = frames.pop(0)
-                    request_id = frames.pop(0)
-                except IndexError:
-                    continue
-
-                if type_ == b'request':
-                    connection.enqueue(
-                        self._process_request(request_id, connection, frames),
-                    )
-                elif type_ == b'response':
-                    connection._requester.set_request_result(
-                        request_id,
-                        frames,
-                    )
-
-    async def _process_request(self, request_id, connection, frames):
-        try:
-            command = frames.pop(0)
-        except IndexError:
-            return
-
-        handler = self._command_handlers.get(command)
-
-        if handler:
-            try:
-                reply = await handler(connection, frames) or []
-
-                await connection.response(request_id, 200, reply)
-            except CallError as ex:
-                await connection.error_response(
-                    request_id,
-                    ex.code,
-                    ex.message,
-                )
-            except asyncio.CancelledError:
-                await connection.error_response(
-                    request_id,
-                    503,
-                    "Request was cancelled.",
-                )
-            except Exception as ex:
-                logger.exception(
-                    "Unexpected error while handling request %s from %s.",
-                    hexlify(request_id),
-                    connection,
-                )
-                await connection.error_response(
-                    request_id,
-                    500,
-                    "Internal error.",
-                )
-        else:
-            await connection.error_response(
-                request_id,
-                404,
-                "Unknown command.",
-            )
+    # Protected methods.
 
     async def _register(self, connection, frames):
         if connection.domain:
@@ -238,7 +138,7 @@ class Broker(AsyncTaskObject):
         sep_index = frames.index(b'')
         domain = tuple(frames[:sep_index])
         credentials = tuple(frames[sep_index + 1:])
-        self._register_connection(connection, domain)
+        self.__register_connection(connection, domain)
 
     async def _unregister(self, connection, frames):
         if not connection.domain:
@@ -247,12 +147,12 @@ class Broker(AsyncTaskObject):
                 message="Not registered.",
             )
 
-        self._unregister_connection(connection)
+        self.__unregister_connection(connection)
 
     async def _call(self, connection, frames):
         sep_index = frames.index(b'')
         domain = tuple(frames[:sep_index])
-        connections = self._connections_by_domain.get(domain)
+        connections = self.__connections_by_domain.get(domain)
 
         if not connections:
             raise CallError(
@@ -271,40 +171,40 @@ class Broker(AsyncTaskObject):
 
     # Private methods.
 
-    def _refresh_connection(self, *, socket, identity):
-        connection = self._connections.get((socket, identity))
+    def __refresh_connection(self, *, socket, identity):
+        connection = self.__connections.get((socket, identity))
 
         if connection:
             connection.refresh()
         else:
-            connection = self._add_connection(socket=socket, identity=identity)
+            connection = self.__add_connection(socket=socket, identity=identity)
 
         return connection
 
-    def _add_connection(self, *, socket, identity):
+    def __add_connection(self, *, socket, identity):
         connection = Connection(
             socket=socket,
             identity=identity,
-            timeout=self._connection_timeout,
+            timeout=self.__connection_timeout,
             loop=self.loop,
         )
-        connection.on_closed.connect(self._remove_connection)
-        self._connections[(socket, identity)] = connection
+        connection.add_cleanup(partial(self.__remove_connection, connection))
+        self.__connections[(socket, identity)] = connection
         logger.debug("Connection with %s established.", connection)
 
         return connection
 
-    def _remove_connection(self, connection):
+    def __remove_connection(self, connection):
         if connection.domain:
-            self._unregister_connection(connection)
+            self.__unregister_connection(connection)
 
-        del self._connections[(connection.socket, connection.identity)]
+        del self.__connections[(connection.socket, connection.identity)]
         logger.debug("Connection with %s removed.", connection)
 
         return connection
 
-    def _register_connection(self, connection, domain):
-        connections = self._connections_by_domain.setdefault(domain, deque())
+    def __register_connection(self, connection, domain):
+        connections = self.__connections_by_domain.setdefault(domain, deque())
 
         if not connections:
             logger.info("Domain %s is now available.", domain)
@@ -317,8 +217,8 @@ class Broker(AsyncTaskObject):
             connection,
         )
 
-    def _unregister_connection(self, connection):
-        connections = self._connections_by_domain[connection.domain]
+    def __unregister_connection(self, connection):
+        connections = self.__connections_by_domain[connection.domain]
         connections.remove(connection)
 
         logger.info(
@@ -328,7 +228,21 @@ class Broker(AsyncTaskObject):
         )
 
         if not connections:
-            del self._connections_by_domain[connection.domain]
+            del self.__connections_by_domain[connection.domain]
             logger.info("Domain %s is now unavailable.", connection.domain)
 
         connection.domain = None
+
+    async def __receiving_loop(self):
+        while True:
+            pairs = await self.__multiplexer.recv_multipart()
+
+            for socket, frames in pairs:
+                identity = frames.pop(0)
+                frames.pop(0)  # Empty frame.
+
+                connection = self.__refresh_connection(
+                    socket=socket,
+                    identity=identity,
+                )
+                await connection.receive(frames)

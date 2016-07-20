@@ -2,120 +2,88 @@
 A client class.
 """
 
-
-import asyncio
-import json
-
-from azmq.common import AsyncTaskObject
-from functools import partial
-from itertools import (
-    count,
-    chain,
-)
-
 from .common import (
-    Requester,
     deserialize,
     serialize,
 )
-from .errors import raise_on_error
+from .generic_client import GenericClient
 
 
-class Client(AsyncTaskObject):
-    def __init__(self, *, socket, domain, credentials, **kwargs):
+class Client(GenericClient):
+    def __init__(self, *, socket, domain, **kwargs):
         super().__init__(**kwargs)
         self.socket = socket
         self.domain = domain
-        self.credentials = credentials
-        self._requester = Requester(
-            loop=self.loop,
-            send_request_callback=self.__send_request,
-        )
 
-    async def register(self):
-        await self._request(
-            (b'register',),
-            self.domain,
-            (b'',),
-            self.credentials,
-        )
+    async def register(self, credentials):
+        """
+        Register on the broker.
+
+        :param credentials: The credentials to use for registration.
+        """
+        frames = [b'register']
+        frames.extend(self.domain)
+        frames.append(b'')
+        frames.extend(credentials)
+
+        await self._request(frames)
 
     async def unregister(self):
-        await self._request(
-            (b'unregister',),
-        )
+        """
+        Unregister from the broker.
+        """
+        await self._request([b'unregister'])
 
     async def call(self, domain, method, args=None, kwargs=None):
-        reply = await self._request(
-            (b'call',),
-            domain,
-            (
-                b'',
-                method.encode('utf-8'),
-                serialize(args or []),
-                serialize(kwargs or {}),
-            ),
-        )
-        return deserialize(reply[0])
+        """
+        Remote call to a specified domain.
 
-    # Internal methods.
-
-    async def on_close(self):
-        self._requester.cancel_pending_requests()
-
-        await super().on_close()
-
-    async def on_run(self):
-        while True:
-            reply = await self.socket.recv_multipart()
-
-            try:
-                reply.pop(0)  # Empty frame.
-                type_ = reply.pop(0)
-                request_id = reply.pop(0)
-            except IndexError:
-                continue
-
-            if type_ == b'request':
-                # TODO: Implement for real.
-                await self.__send_response(
-                    request_id=request_id,
-                    args=(serialize(42),),
-                )
-
-            elif type_ == b'response':
-                self._requester.set_request_result(request_id, reply)
-
-    async def _request(self, *args):
-        result = await self._requester.request(args=chain(*args))
-        return raise_on_error(result)
-
-    async def _response(self, request_id, code, args):
-        await self.__send_response(
-            request_id,
-            [
-                ('%d' % code).encode('utf-8'),
-            ] + list(args),
-        )
-
-    # Private methods.
-
-    async def __send_request(self, *, request_id, args):
-        frames = [
+        :param domain: The target domain.
+        :param method: The method to call.
+        :param args: A list of arguments to pass.
+        :param kwargs: A list of named arguments to pass.
+        :returns: The method call results.
+        """
+        frames = [b'call']
+        frames.extend(self.domain)
+        frames.extend([
             b'',
-            b'request',
-            request_id,
-        ]
-        frames.extend(args)
+            method.encode('utf-8'),
+            serialize(list(args) or []),
+            serialize(dict(kwargs or {})),
+        ])
 
+        result = await self._request(frames)
+        return deserialize(result[0])
+
+    # Protected methods.
+
+    async def _read(self):
+        """
+        Read frames.
+
+        :returns: The read frames.
+        """
+        frames = await self.socket.recv_multipart()
+        frames.pop(0)  # Empty frame.
+
+        return frames
+
+    async def _write(self, frames):
+        """
+        Write frames.
+
+        :param frames: The frames to write.
+        """
+        frames.insert(0, b'')
         await self.socket.send_multipart(frames)
 
-    async def __send_response(self, *, request_id, args):
-        frames = [
-            b'',
-            b'response',
-            request_id,
-        ]
-        frames.extend(args)
+    async def _on_request(self, request_id, frames):
+        """
+        Called whenever a request is received.
 
-        await self.socket.send_multipart(frames)
+        :param request_id: A unique request id that must be sent back.
+        :param frames: The request frames.
+        :returns: A list of frames that constitute the reply.
+        """
+        return [b'42']
