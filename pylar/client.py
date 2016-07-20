@@ -8,20 +8,57 @@ import json
 
 from azmq.common import AsyncTaskObject
 from functools import partial
-from itertools import count
+from itertools import (
+    count,
+    chain,
+)
 
-from .common import Requester
+from .common import (
+    Requester,
+    deserialize,
+    serialize,
+)
 from .errors import raise_on_error
 
 
 class Client(AsyncTaskObject):
-    def __init__(self, *, socket, **kwargs):
+    def __init__(self, *, socket, domain, credentials, **kwargs):
         super().__init__(**kwargs)
         self.socket = socket
+        self.domain = domain
+        self.credentials = credentials
         self._requester = Requester(
             loop=self.loop,
             send_request_callback=self.__send_request,
         )
+
+    async def register(self):
+        await self._request(
+            (b'register',),
+            self.domain,
+            (b'',),
+            self.credentials,
+        )
+
+    async def unregister(self):
+        await self._request(
+            (b'unregister',),
+        )
+
+    async def call(self, domain, method, args=None, kwargs=None):
+        reply = await self._request(
+            (b'call',),
+            domain,
+            (
+                b'',
+                method.encode('utf-8'),
+                serialize(args or []),
+                serialize(kwargs or {}),
+            ),
+        )
+        return deserialize(reply[0])
+
+    # Internal methods.
 
     async def on_close(self):
         self._requester.cancel_pending_requests()
@@ -34,54 +71,51 @@ class Client(AsyncTaskObject):
 
             try:
                 reply.pop(0)  # Empty frame.
-                domain = reply.pop(0)
+                type_ = reply.pop(0)
+                request_id = reply.pop(0)
             except IndexError:
                 continue
 
-            if domain == b'broker':
-                try:
-                    request_id = reply.pop(0)
-                except IndexError:
-                    continue
+            if type_ == b'request':
+                # TODO: Implement for real.
+                await self.__send_response(
+                    request_id=request_id,
+                    args=(serialize(42),),
+                )
 
+            elif type_ == b'response':
                 self._requester.set_request_result(request_id, reply)
 
-            elif domain == b'service':
-                print("received", reply)
+    async def _request(self, *args):
+        result = await self._requester.request(args=chain(*args))
+        return raise_on_error(result)
 
-    async def request(self, command, *args):
-        result = await self._requester.request(command, args)
-        return raise_on_error(command, result)
-
-    async def register(self, service_name):
-        await self.request(
-            b'register',
-            service_name.encode('utf-8'),
+    async def _response(self, request_id, code, args):
+        await self.__send_response(
+            request_id,
+            [
+                ('%d' % code).encode('utf-8'),
+            ] + list(args),
         )
-
-    async def unregister(self, service_name):
-        await self.request(
-            b'unregister',
-            service_name.encode('utf-8'),
-        )
-
-    async def call(self, service_name, method, args=None, kwargs=None):
-        reply = await self.request(
-            b'call',
-            service_name.encode('utf-8'),
-            method.encode('utf-8'),
-            json.dumps(args or [], separators=(',', ':')).encode('utf-8'),
-            json.dumps(kwargs or {}, separators=(',', ':')).encode('utf-8'),
-        )
-        print(reply)
-        return json.loads(reply[0].decode('utf-8'))
 
     # Private methods.
 
-    async def __send_request(self, command, args, *, request_id):
-        await self.socket.send_multipart((
+    async def __send_request(self, *, request_id, args):
+        frames = [
             b'',
-            b'broker',
+            b'request',
             request_id,
-            command,
-        ) + args)
+        ]
+        frames.extend(args)
+
+        await self.socket.send_multipart(frames)
+
+    async def __send_response(self, *, request_id, args):
+        frames = [
+            b'',
+            b'response',
+            request_id,
+        ]
+        frames.extend(args)
+
+        await self.socket.send_multipart(frames)

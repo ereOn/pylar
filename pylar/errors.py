@@ -24,7 +24,7 @@ class InvalidReplyError(CallError):
         )
 
 
-def raise_on_error(command, reply):
+def raise_on_error(reply):
     try:
         code = int(reply.pop(0))
     except (IndexError, ValueError):
@@ -42,10 +42,3 @@ def raise_on_error(command, reply):
             )
 
     return reply
-
-
-def make_error_frames(code, message):
-    return [
-        ('%d' % code).encode('utf-8'),
-        message.encode('utf-8'),
-    ]

@@ -11,11 +11,23 @@ async def run():
             async with context.socket(azmq.DEALER) as socket_b:
                 socket_a.connect('tcp://127.0.0.1:3333')
                 socket_b.connect('tcp://127.0.0.1:3333')
-                client_a = Client(socket=socket_a)
-                client_b = Client(socket=socket_b)
-                await client_a.register('a')
-                await client_b.register('b')
-                r = await client_a.call('b', 'send_message', ['hello'])
+                client_a = Client(
+                    socket=socket_a,
+                    domain=(b'user', b'alice',),
+                    credentials=(),
+                )
+                client_b = Client(
+                    socket=socket_b,
+                    domain=(b'user', b'bob',),
+                    credentials=(),
+                )
+                await asyncio.wait_for(client_a.register(), 1)
+                await client_b.register()
+                r = await client_a.call(
+                    domain=(b'user', b'bob'),
+                    method='send_message',
+                    args=['hello'],
+                )
                 print(r)
 
 
