@@ -25,7 +25,7 @@ async def run():
                 try:
                     await client.register(())
                     print("client token: %r" % client.token)
-                    r = await client.call(
+                    r = await client.method_call(
                         domain=(b'user', b'bob'),
                         method='send_message',
                         args=['hello'],

@@ -43,7 +43,7 @@ class Connection(GenericClient):
 
         # Public attributes.
         self.domain = None
-        self.token = None
+        self.token = ()
 
     def __str__(self):
         return hexlify(self.identity).decode('utf-8')
@@ -79,6 +79,23 @@ class Connection(GenericClient):
         frames.insert(0, b'')
         frames.insert(0, self.identity)
         await self.socket.send_multipart(frames)
+
+    async def call(self, domain, token, args):
+        """
+        Send a generic call to a specified domain.
+
+        :param args: A list of frames to pass.
+        :returns: The call results.
+        """
+        assert domain is not None
+
+        frames = list(domain)
+        frames.append(b'')
+        frames.extend(token)
+        frames.append(b'')
+        frames.extend(args)
+
+        return await self._request(frames)
 
     async def _on_request(self, frames):
         """
@@ -218,12 +235,6 @@ class Broker(AsyncObject):
         return await handler(connection, frames)
 
     async def __register_request(self, connection, frames):
-        if connection.domain:
-            raise CallError(
-                code=412,
-                message="Already registered.",
-            )
-
         sep_index = frames.index(b'')
         domain = tuple(frames[:sep_index])
         credentials = tuple(frames[sep_index + 1:])
@@ -250,25 +261,33 @@ class Broker(AsyncObject):
 
             auth_connection = connections[0]
             connections.rotate(-1)
-            auth_frames = [b'authenticate']
-            auth_frames.extend(frames)
 
-            token = await auth_connection._request(auth_frames)
+            token = await auth_connection.call(
+                domain=domain,
+                token=(),
+                args=[
+                    b'authenticate',
+                ],
+            )
+
+        if connection.domain:
+            self.__unregister_connection(connection)
 
         self.__register_connection(connection, domain, token)
 
         return token
 
     async def __unregister_request(self, connection, frames):
+        if connection.domain:
+            self.__unregister_connection(connection)
+
+    async def __call_request(self, connection, frames):
         if not connection.domain:
             raise CallError(
                 code=412,
                 message="Not registered.",
             )
 
-        self.__unregister_connection(connection)
-
-    async def __call_request(self, connection, frames):
         sep_index = frames.index(b'')
         domain = tuple(frames[:sep_index])
         connections = self.__connections_by_domain.get(domain)
@@ -279,12 +298,14 @@ class Broker(AsyncObject):
                 message="No such domain: %r." % (domain,),
             )
 
-        frames = frames[sep_index + 1:]
-        frames.insert(0, b'call')
-        connection = connections[0]
+        target_connection = connections[0]
         connections.rotate(-1)
 
-        return await connection._request(frames)
+        return await target_connection.call(
+            domain=connection.domain,
+            token=connection.token,
+            args=frames[sep_index + 1:],
+        )
 
     def __verify_service_credentials(self, service_name, credentials):
         salt, hash = credentials

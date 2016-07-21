@@ -37,7 +37,21 @@ class Client(GenericClient):
 
         self.token = None
 
-    async def call(self, domain, method, args=None, kwargs=None):
+    async def call(self, domain, args):
+        """
+        Send a generic call to a specified domain.
+
+        :param domain: The target domain.
+        :param args: A list of frames to pass.
+        :returns: The call results.
+        """
+        frames = [b'call']
+        frames.extend(self.domain)
+        frames.append(b'')
+
+        return await self._request(frames)
+
+    async def method_call(self, domain, method, args=None, kwargs=None):
         """
         Remote call to a specified domain.
 
@@ -47,16 +61,14 @@ class Client(GenericClient):
         :param kwargs: A list of named arguments to pass.
         :returns: The method call results.
         """
-        frames = [b'call']
-        frames.extend(self.domain)
-        frames.extend([
-            b'',
+        frames = [
+            b'method_call',
             method.encode('utf-8'),
             serialize(list(args) or []),
             serialize(dict(kwargs or {})),
-        ])
+        ]
 
-        result = await self._request(frames)
+        result = await self.call(domain, frames)
         return deserialize(result[0])
 
     # Protected methods.
