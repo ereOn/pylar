@@ -38,5 +38,5 @@ class Service(Client):
 
         return (salt, hash)
 
-    async def _on_request(self, frames):
+    async def on_call(self, domain, token, command, args):
         return [b'okay']

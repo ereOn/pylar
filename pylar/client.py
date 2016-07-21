@@ -101,4 +101,23 @@ class Client(GenericClient):
         :param frames: The request frames.
         :returns: A list of frames that constitute the reply.
         """
-        return [b'47']
+        sep_index = frames.index(b'')
+        domain = tuple(frames[:sep_index])
+        del frames[:sep_index + 1]
+        sep_index = frames.index(b'')
+        token = tuple(frames[:sep_index])
+        del frames[:sep_index + 1]
+        command = frames.pop(0)
+        return await self.on_call(domain, token, command, frames)
+
+    async def on_call(self, domain, token, command, args):
+        """
+        Called whenever a call is received.
+
+        :param domain: The caller's domain.
+        :param token: The caller's token.
+        :param command: The command.
+        :param args: The additional frames.
+        :returns: The result.
+        """
+        raise NotImplementedError
