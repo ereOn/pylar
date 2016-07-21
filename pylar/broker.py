@@ -8,7 +8,6 @@ import azmq
 import logging
 
 from azmq.common import AsyncTimeout
-from azmq.multiplexer import Multiplexer
 from binascii import hexlify
 from collections import deque
 from functools import partial
@@ -45,10 +44,7 @@ class Connection(GenericClient):
         self.domain = None
 
     def __str__(self):
-        return '%x-%s' % (
-            id(self.socket),
-            hexlify(self.identity).decode('utf-8'),
-        )
+        return hexlify(self.identity).decode('utf-8')
 
     def refresh(self):
         """
@@ -92,21 +88,18 @@ class Connection(GenericClient):
         return await self.__on_request_cb(self, frames)
 
 class Broker(AsyncObject):
-    def __init__(self, *, context, sockets, **kwargs):
+    def __init__(self, *, context, socket, **kwargs):
         super().__init__(**kwargs)
         self.context = context
-        self.__multiplexer = Multiplexer(loop=self.loop)
-
-        for socket in sockets:
-            self.__multiplexer.add_socket(socket)
+        self.socket = socket
 
         self.__connection_timeout = 5.0
         self.__connections = {}
         self.__connections_by_domain = {}
         self.__command_handlers = {
-            b'register': self.__register,
-            b'unregister': self.__unregister,
-            b'call': self.__call,
+            b'register': self.__register_request,
+            b'unregister': self.__unregister_request,
+            b'call': self.__call_request,
         }
 
         self.add_cleanup(self.force_disconnections)
@@ -135,26 +128,26 @@ class Broker(AsyncObject):
 
     # Private methods.
 
-    def __refresh_connection(self, *, socket, identity):
-        connection = self.__connections.get((socket, identity))
+    def __refresh_connection(self, identity):
+        connection = self.__connections.get(identity)
 
         if connection:
             connection.refresh()
         else:
-            connection = self.__add_connection(socket=socket, identity=identity)
+            connection = self.__add_connection(identity)
 
         return connection
 
-    def __add_connection(self, *, socket, identity):
+    def __add_connection(self, identity):
         connection = Connection(
-            socket=socket,
+            socket=self.socket,
             identity=identity,
             on_request_cb=self.__process_request,
             timeout=self.__connection_timeout,
             loop=self.loop,
         )
         connection.add_cleanup(partial(self.__remove_connection, connection))
-        self.__connections[(socket, identity)] = connection
+        self.__connections[identity] = connection
         logger.debug("Connection with %s established.", connection)
 
         return connection
@@ -163,7 +156,7 @@ class Broker(AsyncObject):
         if connection.domain:
             self.__unregister_connection(connection)
 
-        del self.__connections[(connection.socket, connection.identity)]
+        del self.__connections[connection.identity]
         logger.debug("Connection with %s removed.", connection)
 
         return connection
@@ -200,17 +193,13 @@ class Broker(AsyncObject):
 
     async def __receiving_loop(self):
         while True:
-            pairs = await self.__multiplexer.recv_multipart()
+            frames = await self.socket.recv_multipart()
+            identity = frames.pop(0)
+            frames.pop(0)  # Empty frame.
 
-            for socket, frames in pairs:
-                identity = frames.pop(0)
-                frames.pop(0)  # Empty frame.
+            connection = self.__refresh_connection(identity)
 
-                connection = self.__refresh_connection(
-                    socket=socket,
-                    identity=identity,
-                )
-                await connection.receive(frames)
+            await connection.receive(frames)
 
     async def __process_request(self, connection, frames):
         command = frames.pop(0)
@@ -221,7 +210,7 @@ class Broker(AsyncObject):
 
         return await handler(connection, frames)
 
-    async def __register(self, connection, frames):
+    async def __register_request(self, connection, frames):
         if connection.domain:
             raise CallError(
                 code=412,
@@ -233,7 +222,7 @@ class Broker(AsyncObject):
         credentials = tuple(frames[sep_index + 1:])
         self.__register_connection(connection, domain)
 
-    async def __unregister(self, connection, frames):
+    async def __unregister_request(self, connection, frames):
         if not connection.domain:
             raise CallError(
                 code=412,
@@ -242,7 +231,7 @@ class Broker(AsyncObject):
 
         self.__unregister_connection(connection)
 
-    async def __call(self, connection, frames):
+    async def __call_request(self, connection, frames):
         sep_index = frames.index(b'')
         domain = tuple(frames[:sep_index])
         connections = self.__connections_by_domain.get(domain)

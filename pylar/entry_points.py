@@ -95,14 +95,12 @@ def broker(endpoints):
 
     loop = set_event_loop()
     context = Context(loop=loop)
-    sockets = []
+    socket = context.socket(azmq.ROUTER)
 
     for endpoint in endpoints:
-        socket = context.socket(azmq.ROUTER)
         socket.bind(endpoint)
-        sockets.append(socket)
 
-    broker = Broker(context=context, sockets=sockets, loop=loop)
+    broker = Broker(context=context, socket=socket, loop=loop)
 
     click.echo("Broker started on: %s." % ', '.join(endpoints))
 
@@ -129,5 +127,8 @@ def service(endpoint):
         (loop, context.close),
     ):
         loop.run_until_complete(context.wait_closed())
+
+    context.close()
+    loop.run_until_complete(context.wait_closed())
 
     click.echo("Service stopped.")
