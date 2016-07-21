@@ -10,13 +10,13 @@ import logging
 from azmq.common import AsyncTimeout
 from binascii import hexlify
 from collections import deque
-from csodium import crypto_generichash_blake2b_salt_personal
 from functools import partial
 
 from .async_object import AsyncObject
 from .errors import CallError
 from .generic_client import GenericClient
 from .log import logger as main_logger
+from .security import verify_hash
 
 logger = main_logger.getChild('broker')
 
@@ -288,11 +288,5 @@ class Broker(AsyncObject):
 
     def __verify_authentication_credentials(self, credentials):
         salt, hash = credentials
-        reference = crypto_generichash_blake2b_salt_personal(
-            in_=None,
-            key=self.shared_secret,
-            salt=salt,
-            personal=b'authentication--',
-        )
 
-        return reference == hash
+        return verify_hash(self.shared_secret, salt, b'authentication', hash)

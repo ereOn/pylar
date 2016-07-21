@@ -1,10 +1,9 @@
 import asyncio
 import azmq
 
-from csodium import crypto_generichash_blake2b_salt_personal
-
 from pylar.entry_points import set_event_loop
 from pylar.client import Client
+from pylar.security import generate_hash
 
 
 async def run():
@@ -23,12 +22,12 @@ async def run():
                 )
                 try:
                     salt = b'\0' * 16
-                    hash = crypto_generichash_blake2b_salt_personal(
-                        in_=None,
-                        key=b'mysupersecret!!!',
-                        salt=salt,
-                        personal=b'authentication--',
+                    hash = generate_hash(
+                        b'mysupersecret!!!',
+                        salt,
+                        b'authentication',
                     )
+
                     await asyncio.wait_for(
                         service.register((salt, hash)),
                         1,
