@@ -23,6 +23,7 @@ class GenericClient(AsyncObject):
         super().__init__(**kwargs)
 
         # Private members.
+        self.__ping_interval = 3
         self.__request_id_generator = count()
         self.__pending_requests = {}
 
@@ -31,6 +32,7 @@ class GenericClient(AsyncObject):
 
         # Call the receiving loop from the entire instance duration.
         self.add_task(self.__receiving_loop())
+        self.add_task(self.__heartbeat_loop())
 
     def cancel_pending_requests(self):
         """
@@ -91,6 +93,14 @@ class GenericClient(AsyncObject):
         """
         raise NotImplementedError
 
+    async def _ping(self):
+        """
+        Send a ping over the connection.
+        """
+        request_id = self.__request_id()
+
+        await self.__send_ping(request_id)
+
     # Private methods.
 
     def __set_request_result(self, request_id, frames):
@@ -130,6 +140,15 @@ class GenericClient(AsyncObject):
                 self.add_task(self.__process_request(request_id, frames))
             elif type_ == b'response':
                 self.add_task(self.__process_response(request_id, frames))
+            elif type_ == b'ping':
+                await self.__send_pong(request_id)
+            elif type_ == b'pong':
+                pass
+
+    async def __heartbeat_loop(self):
+        while True:
+            await asyncio.sleep(self.__ping_interval)
+            await self._ping()
 
     async def __process_request(self, request_id, frames):
         try:
@@ -195,7 +214,6 @@ class GenericClient(AsyncObject):
             message.encode('utf-8'),
         ])
 
-
     async def __send_response(self, request_id, args):
         frames = [
             b'response',
@@ -214,3 +232,9 @@ class GenericClient(AsyncObject):
         frames.extend(args)
 
         await self._write(frames)
+
+    async def __send_ping(self, request_id):
+        await self._write([b'ping', request_id])
+
+    async def __send_pong(self, request_id):
+        await self._write([b'pong', request_id])

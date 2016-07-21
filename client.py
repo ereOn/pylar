@@ -40,6 +40,8 @@ async def run():
                         args=['hello'],
                     )
                     print(r)
+                    await asyncio.sleep(10)
+                    await client.unregister()
                 finally:
                     service.close()
                     client.close()
