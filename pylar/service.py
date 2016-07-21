@@ -39,5 +39,4 @@ class Service(Client):
         return (salt, hash)
 
     async def _on_request(self, frames):
-        print(frames)
         return [b'okay']

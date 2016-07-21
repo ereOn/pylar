@@ -46,8 +46,9 @@ class Client(GenericClient):
         :returns: The call results.
         """
         frames = [b'call']
-        frames.extend(self.domain)
+        frames.extend(domain)
         frames.append(b'')
+        frames.extend(args)
 
         return await self._request(frames)
 
