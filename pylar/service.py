@@ -14,25 +14,8 @@ from .security import (
 )
 
 
-class ServiceClient(Client):
-    def __init__(self, service, **kwargs):
-        super().__init__(**kwargs)
-        self.service = service
-
-    async def _on_request(self, frames):
-        """
-        Called whenever a request is received.
-
-        :param frames: The request frames.
-        :returns: A list of frames that constitute the reply.
-        """
-        return await self.service._on_request(frames)
-
-
-class Service(AsyncObject):
-    def __init__(self, socket, shared_secret, name=None, **kwargs):
-        super().__init__(**kwargs)
-
+class Service(Client):
+    def __init__(self, shared_secret, name=None, **kwargs):
         if name is not None:
             self.name = name
 
@@ -40,16 +23,13 @@ class Service(AsyncObject):
         # level.
         assert self.name, "No service name was specified."
 
-        self._client = ServiceClient(
-            service=self,
-            socket=socket,
+        super().__init__(
             domain=(b'service', self.name),
-            loop=self.loop,
+            **kwargs,
         )
-        self.add_cleanup(self._client.close)
-        self.add_cleanup(self._client.wait_closed)
+
         credentials = self.get_credentials(name, shared_secret)
-        self.add_task(self._client.register(credentials))
+        self.add_task(self.register(credentials))
 
     @staticmethod
     def get_credentials(name, shared_secret):
