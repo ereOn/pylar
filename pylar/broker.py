@@ -22,14 +22,15 @@ logger = main_logger.getChild('broker')
 
 
 class Connection(GenericClient):
-    def __init__(self, *, socket, identity, timeout, **kwargs):
+    def __init__(self, *, socket, identity, on_request_cb, timeout, **kwargs):
         super().__init__(**kwargs)
         self.socket = socket
         self.identity = identity
 
+        self.__on_request_cb = on_request_cb
+
         # The receiving queue.
         self.__queue = asyncio.Queue(loop=self.loop)
-        self._read = self.__queue.get
 
         # The dying timer.
         self.__timeout = AsyncTimeout(
@@ -63,6 +64,14 @@ class Connection(GenericClient):
         """
         await self.__queue.put(frames)
 
+    async def _read(self):
+        """
+        Read frames.
+
+        :returns: The read frames.
+        """
+        return await self.__queue.get()
+
     async def _write(self, frames):
         """
         Write frames.
@@ -73,16 +82,14 @@ class Connection(GenericClient):
         frames.insert(0, self.identity)
         await self.socket.send_multipart(frames)
 
-    async def _on_request(self, request_id, frames):
+    async def _on_request(self, frames):
         """
         Called whenever a request is received.
 
-        :param request_id: A unique request id that must be sent back.
         :param frames: The request frames.
         :returns: A list of frames that constitute the reply.
         """
-        return [b'42']
-
+        return await self.__on_request_cb(self, frames)
 
 class Broker(AsyncObject):
     def __init__(self, *, context, sockets, **kwargs):
@@ -97,9 +104,9 @@ class Broker(AsyncObject):
         self.__connections = {}
         self.__connections_by_domain = {}
         self.__command_handlers = {
-            b'register': self._register,
-            b'unregister': self._unregister,
-            b'call': self._call,
+            b'register': self.__register,
+            b'unregister': self.__unregister,
+            b'call': self.__call,
         }
 
         self.add_cleanup(self.force_disconnections)
@@ -126,49 +133,6 @@ class Broker(AsyncObject):
                 loop=self.loop,
             )
 
-    # Protected methods.
-
-    async def _register(self, connection, frames):
-        if connection.domain:
-            raise CallError(
-                code=412,
-                message="Already registered.",
-            )
-
-        sep_index = frames.index(b'')
-        domain = tuple(frames[:sep_index])
-        credentials = tuple(frames[sep_index + 1:])
-        self.__register_connection(connection, domain)
-
-    async def _unregister(self, connection, frames):
-        if not connection.domain:
-            raise CallError(
-                code=412,
-                message="Not registered.",
-            )
-
-        self.__unregister_connection(connection)
-
-    async def _call(self, connection, frames):
-        sep_index = frames.index(b'')
-        domain = tuple(frames[:sep_index])
-        connections = self.__connections_by_domain.get(domain)
-
-        if not connections:
-            raise CallError(
-                code=404,
-                message="No such domain: %r." % (domain,),
-            )
-
-        frames = frames[sep_index + 1:]
-        connection = connections[0]
-        connections.rotate(-1)
-
-        return await connection.request(
-            (b'call',),
-            frames,
-        )
-
     # Private methods.
 
     def __refresh_connection(self, *, socket, identity):
@@ -185,6 +149,7 @@ class Broker(AsyncObject):
         connection = Connection(
             socket=socket,
             identity=identity,
+            on_request_cb=self.__process_request,
             timeout=self.__connection_timeout,
             loop=self.loop,
         )
@@ -246,3 +211,51 @@ class Broker(AsyncObject):
                     identity=identity,
                 )
                 await connection.receive(frames)
+
+    async def __process_request(self, connection, frames):
+        command = frames.pop(0)
+        handler = self.__command_handlers.get(command)
+
+        if not handler:
+            raise CallError(code=400, message="Bad request.")
+
+        return await handler(connection, frames)
+
+    async def __register(self, connection, frames):
+        if connection.domain:
+            raise CallError(
+                code=412,
+                message="Already registered.",
+            )
+
+        sep_index = frames.index(b'')
+        domain = tuple(frames[:sep_index])
+        credentials = tuple(frames[sep_index + 1:])
+        self.__register_connection(connection, domain)
+
+    async def __unregister(self, connection, frames):
+        if not connection.domain:
+            raise CallError(
+                code=412,
+                message="Not registered.",
+            )
+
+        self.__unregister_connection(connection)
+
+    async def __call(self, connection, frames):
+        sep_index = frames.index(b'')
+        domain = tuple(frames[:sep_index])
+        connections = self.__connections_by_domain.get(domain)
+
+        if not connections:
+            raise CallError(
+                code=404,
+                message="No such domain: %r." % (domain,),
+            )
+
+        frames = frames[sep_index + 1:]
+        frames.insert(0, b'call')
+        connection = connections[0]
+        connections.rotate(-1)
+
+        return await connection._request(frames)

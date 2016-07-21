@@ -78,12 +78,11 @@ class Client(GenericClient):
         frames.insert(0, b'')
         await self.socket.send_multipart(frames)
 
-    async def _on_request(self, request_id, frames):
+    async def _on_request(self, frames):
         """
         Called whenever a request is received.
 
-        :param request_id: A unique request id that must be sent back.
         :param frames: The request frames.
         :returns: A list of frames that constitute the reply.
         """
-        return [b'42']
+        return [b'47']

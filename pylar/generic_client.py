@@ -80,11 +80,10 @@ class GenericClient(AsyncObject):
 
         return await future
 
-    async def _on_request(self, request_id, frames):
+    async def _on_request(self, frames):
         """
         Called whenever a request is received.
 
-        :param request_id: A unique request id that must be sent back.
         :param frames: The request frames.
         :returns: A list of frames that constitute the reply.
 
@@ -128,54 +127,65 @@ class GenericClient(AsyncObject):
                 continue
 
             if type_ == b'request':
-                try:
-                    response = await self._on_request(request_id, frames)
-                except CallError as ex:
-                    await self.__send_error_response(
-                        request_id,
-                        ex.code,
-                        ex.message,
-                    )
-                except Exception as ex:
-                    logger.exception(
-                        "Unexpected error while handling request %s.",
-                        hexlify(request_id),
-                    )
-                    await self.__send_error_response(
-                        request_id,
-                        500,
-                        "Internal error.",
-                    )
-                else:
-                    await self.__send_response(request_id, response)
-
+                self.add_task(self.__process_request(request_id, frames))
             elif type_ == b'response':
-                try:
-                    code = int(frames.pop(0))
-                except (IndexError, ValueError):
-                    self.__set_request_exception(
-                        request_id,
-                        InvalidReplyError(),
-                    )
+                self.add_task(self.__process_response(request_id, frames))
 
-                if code == 200:
-                    self.__set_request_result(request_id, frames)
-                else:
-                    try:
-                        message = frames.pop(0).decode('utf-8')
-                    except (IndexError, UnicodeDecodeError):
-                        self.__set_request_exception(
-                            request_id,
-                            InvalidReplyError(),
-                        )
-                    else:
-                        self.__set_request_exception(
-                            request_id,
-                            CallError(
-                                code=code,
-                                message=message,
-                            ),
-                        )
+    async def __process_request(self, request_id, frames):
+        try:
+            response = await self._on_request(frames)
+        except asyncio.CancelledError:
+            await self.__send_error_response(
+                request_id,
+                408,
+                "Request timed out.",
+            )
+        except CallError as ex:
+            await self.__send_error_response(
+                request_id,
+                ex.code,
+                ex.message,
+            )
+        except Exception as ex:
+            logger.exception(
+                "Unexpected error while handling request %s.",
+                hexlify(request_id),
+            )
+            await self.__send_error_response(
+                request_id,
+                500,
+                "Internal error.",
+            )
+        else:
+            await self.__send_response(request_id, response or [])
+
+    async def __process_response(self, request_id, frames):
+        try:
+            code = int(frames.pop(0))
+        except (IndexError, ValueError):
+            self.__set_request_exception(
+                request_id,
+                InvalidReplyError(),
+            )
+
+        if code == 200:
+            self.__set_request_result(request_id, frames)
+        else:
+            try:
+                message = frames.pop(0).decode('utf-8')
+            except (IndexError, UnicodeDecodeError):
+                self.__set_request_exception(
+                    request_id,
+                    InvalidReplyError(),
+                )
+            else:
+                self.__set_request_exception(
+                    request_id,
+                    CallError(
+                        code=code,
+                        message=message,
+                    ),
+                )
 
     async def __send_error_response(self, request_id, code, message):
         await self._write([
