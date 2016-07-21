@@ -3,7 +3,7 @@ import azmq
 
 from pylar.entry_points import set_event_loop
 from pylar.client import Client
-from pylar.security import generate_hash
+from pylar.service import Service
 
 
 async def run():
@@ -12,26 +12,17 @@ async def run():
             async with context.socket(azmq.DEALER) as socket_b:
                 socket_a.connect('tcp://127.0.0.1:3333')
                 socket_b.connect('tcp://127.0.0.1:3333')
-                service = Client(
+                service = Service(
                     socket=socket_a,
-                    domain=(b'service', b'authentication',),
+                    shared_secret=b'mysupersecret!!!',
+                    name=b'authentication',
                 )
                 client = Client(
                     socket=socket_b,
                     domain=(b'user', b'bob',),
                 )
-                try:
-                    salt = b'\0' * 16
-                    hash = generate_hash(
-                        b'mysupersecret!!!',
-                        salt,
-                        b'authentication',
-                    )
 
-                    await asyncio.wait_for(
-                        service.register((salt, hash)),
-                        1,
-                    )
+                try:
                     await client.register(())
                     print("client token: %r" % client.token)
                     r = await client.call(
@@ -40,8 +31,6 @@ async def run():
                         args=['hello'],
                     )
                     print(r)
-                    await asyncio.sleep(10)
-                    await client.unregister()
                 finally:
                     service.close()
                     client.close()

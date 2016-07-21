@@ -2,7 +2,19 @@
 Security utils.
 """
 
-from csodium import crypto_generichash_blake2b_salt_personal
+from csodium import (
+    crypto_generichash_blake2b_salt_personal,
+    randombytes,
+)
+
+
+def generate_salt():
+    """
+    Generates a random salt.
+
+    :returns: A random salt.
+    """
+    return randombytes(16)
 
 
 def generate_hash(shared_secret, salt, identifier):

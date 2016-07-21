@@ -90,7 +90,8 @@ class Connection(GenericClient):
         return await self.__on_request_cb(self, frames)
 
 class Broker(AsyncObject):
-    SERVICE_AUTHENTICATION_DOMAIN = (b'service', b'authentication')
+    SERVICE_DOMAIN_PREFIX = b'service'
+    SERVICE_AUTHENTICATION_DOMAIN = (SERVICE_DOMAIN_PREFIX, b'authentication')
 
     def __init__(self, *, context, socket, shared_secret, **kwargs):
         super().__init__(**kwargs)
@@ -227,10 +228,9 @@ class Broker(AsyncObject):
         domain = tuple(frames[:sep_index])
         credentials = tuple(frames[sep_index + 1:])
 
-        # As a special rule for the authentication server, we check the
-        # credentials manually.
-        if domain == self.SERVICE_AUTHENTICATION_DOMAIN:
-            if not self.__verify_authentication_credentials(credentials):
+        # Services are authenticated via a shared secret.
+        if domain[0] == self.SERVICE_DOMAIN_PREFIX:
+            if not self.__verify_service_credentials(domain[1], credentials):
                 raise CallError(
                     code=401,
                     message="Invalid shared secret.",
@@ -286,7 +286,7 @@ class Broker(AsyncObject):
 
         return await connection._request(frames)
 
-    def __verify_authentication_credentials(self, credentials):
+    def __verify_service_credentials(self, service_name, credentials):
         salt, hash = credentials
 
-        return verify_hash(self.shared_secret, salt, b'authentication', hash)
+        return verify_hash(self.shared_secret, salt, service_name, hash)
