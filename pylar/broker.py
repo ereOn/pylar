@@ -10,6 +10,7 @@ import logging
 from azmq.common import AsyncTimeout
 from binascii import hexlify
 from collections import deque
+from csodium import crypto_generichash_blake2b_salt_personal
 from functools import partial
 
 from .async_object import AsyncObject
@@ -42,6 +43,7 @@ class Connection(GenericClient):
 
         # Public attributes.
         self.domain = None
+        self.token = None
 
     def __str__(self):
         return hexlify(self.identity).decode('utf-8')
@@ -88,10 +90,13 @@ class Connection(GenericClient):
         return await self.__on_request_cb(self, frames)
 
 class Broker(AsyncObject):
-    def __init__(self, *, context, socket, **kwargs):
+    SERVICE_AUTHENTICATION_DOMAIN = (b'service', b'authentication')
+
+    def __init__(self, *, context, socket, shared_secret, **kwargs):
         super().__init__(**kwargs)
         self.context = context
         self.socket = socket
+        self.shared_secret = shared_secret
 
         self.__connection_timeout = 5.0
         self.__connections = {}
@@ -161,7 +166,7 @@ class Broker(AsyncObject):
 
         return connection
 
-    def __register_connection(self, connection, domain):
+    def __register_connection(self, connection, domain, token):
         connections = self.__connections_by_domain.setdefault(domain, deque())
 
         if not connections:
@@ -169,6 +174,7 @@ class Broker(AsyncObject):
 
         connections.append(connection)
         connection.domain = domain
+        connection.token = token
         logger.debug(
             "Registered domain %s for connection %s.",
             domain,
@@ -220,7 +226,38 @@ class Broker(AsyncObject):
         sep_index = frames.index(b'')
         domain = tuple(frames[:sep_index])
         credentials = tuple(frames[sep_index + 1:])
-        self.__register_connection(connection, domain)
+
+        # As a special rule for the authentication server, we check the
+        # credentials manually.
+        if domain == self.SERVICE_AUTHENTICATION_DOMAIN:
+            if not self.__verify_authentication_credentials(credentials):
+                raise CallError(
+                    code=401,
+                    message="Invalid shared secret.",
+                )
+
+            token = ()
+        else:
+            connections = self.__connections_by_domain.get(
+                self.SERVICE_AUTHENTICATION_DOMAIN,
+            )
+
+            if not connections:
+                raise CallError(
+                    code=503,
+                    message="Authentication service unavailable.",
+                )
+
+            auth_connection = connections[0]
+            connections.rotate(-1)
+            auth_frames = [b'authenticate']
+            auth_frames.extend(frames)
+
+            token = await auth_connection._request(auth_frames)
+
+        self.__register_connection(connection, domain, token)
+
+        return token
 
     async def __unregister_request(self, connection, frames):
         if not connection.domain:
@@ -248,3 +285,14 @@ class Broker(AsyncObject):
         connections.rotate(-1)
 
         return await connection._request(frames)
+
+    def __verify_authentication_credentials(self, credentials):
+        salt, hash = credentials
+        reference = crypto_generichash_blake2b_salt_personal(
+            in_=None,
+            key=self.shared_secret,
+            salt=salt,
+            personal=b'authentication--',
+        )
+
+        return reference == hash

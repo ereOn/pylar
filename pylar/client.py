@@ -14,6 +14,7 @@ class Client(GenericClient):
         super().__init__(**kwargs)
         self.socket = socket
         self.domain = domain
+        self.token = None
 
     async def register(self, credentials):
         """
@@ -26,13 +27,15 @@ class Client(GenericClient):
         frames.append(b'')
         frames.extend(credentials)
 
-        await self._request(frames)
+        self.token = await self._request(frames)
 
     async def unregister(self):
         """
         Unregister from the broker.
         """
         await self._request([b'unregister'])
+
+        self.token = None
 
     async def call(self, domain, method, args=None, kwargs=None):
         """

@@ -11,6 +11,7 @@ import signal
 import sys
 
 from azmq import Context
+from base64 import b64decode
 from contextlib import contextmanager
 
 from .broker import Broker
@@ -84,9 +85,29 @@ def allow_interruption(*callbacks):
 
 
 @click.command()
+@click.option(
+    '-s',
+    '--shared-secret',
+    default=None,
+    help="A shared secret in base64 format that the authentication services "
+    "use too.",
+)
 @click.argument('endpoints', nargs=-1, metavar='endpoint...')
-def broker(endpoints):
+def broker(shared_secret, endpoints):
     setup_logging()
+
+    if shared_secret is None:
+        click.echo(
+            click.style(
+                "No shared secret was specified ! A default one will be used."
+                " Production usage is *NOT* recommended.",
+                fg='red',
+            ),
+            err=True,
+        )
+        shared_secret = b'changethissecret'
+    else:
+        shared_secret = b64decode(shared_secret)
 
     if not endpoints:
         endpoints = [
@@ -100,7 +121,12 @@ def broker(endpoints):
     for endpoint in endpoints:
         socket.bind(endpoint)
 
-    broker = Broker(context=context, socket=socket, loop=loop)
+    broker = Broker(
+        context=context,
+        socket=socket,
+        shared_secret=shared_secret,
+        loop=loop,
+    )
 
     click.echo("Broker started on: %s." % ', '.join(endpoints))
 
