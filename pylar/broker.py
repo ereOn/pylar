@@ -31,6 +31,7 @@ class Connection(GenericClient):
 
         # The receiving queue.
         self.__queue = asyncio.Queue(loop=self.loop)
+        self.__registration_timeout = 3.0
 
         # The dying timer.
         self.__timeout = AsyncTimeout(
@@ -44,7 +45,7 @@ class Connection(GenericClient):
         # Public attributes.
         self._domain = asyncio.Future(loop=self.loop)
         self.token = None
-        self.add_task(self.request_registration())
+        self.add_task(self.request_registration_later())
 
     @property
     def domain(self):
@@ -109,6 +110,15 @@ class Connection(GenericClient):
         frames.extend(args)
 
         return await self._request(frames)
+
+    async def request_registration_later(self):
+        """
+        Request the remote peer to register.
+        """
+        await asyncio.sleep(self.__registration_timeout)
+
+        if self.domain is None:
+            return await self._notification([b'registration_required'])
 
     async def request_registration(self):
         """
@@ -221,7 +231,7 @@ class Broker(AsyncObject):
         connections = self.__connections_by_domain[connection.domain]
         connections.remove(connection)
 
-        logger.info(
+        logger.debug(
             "Unregistered domain %s for connection %s.",
             connection.domain,
             connection,

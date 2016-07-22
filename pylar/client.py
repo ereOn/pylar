@@ -194,4 +194,5 @@ class Client(GenericClient, metaclass=ClientMeta):
                 "specified.",
             )
         else:
+            logger.debug("Received registration request: registering.")
             await self.register()

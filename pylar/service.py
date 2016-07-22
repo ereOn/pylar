@@ -28,6 +28,7 @@ class Service(Client):
             ),
             **kwargs,
         )
+        self.add_task(self.register())
 
     @staticmethod
     def get_credentials(name, shared_secret):
