@@ -31,7 +31,6 @@ class Connection(GenericClient):
 
         # The receiving queue.
         self.__queue = asyncio.Queue(loop=self.loop)
-        self.__registration_timeout = 3.0
 
         # The dying timer.
         self.__timeout = AsyncTimeout(
@@ -43,21 +42,8 @@ class Connection(GenericClient):
         self.add_cleanup(self.__timeout.wait_closed)
 
         # Public attributes.
-        self._domain = asyncio.Future(loop=self.loop)
+        self.domain = None
         self.token = None
-        self.add_task(self.request_registration_later())
-
-    @property
-    def domain(self):
-        return self._domain.result() if self._domain.done() else None
-
-    @domain.setter
-    def domain(self, value):
-        if value is not None:
-            self._domain.set_result(value)
-        else:
-            self._domain.cancel()
-            self._domain = asyncio.Future(loop=self.loop)
 
     def __str__(self):
         return hexlify(self.identity).decode('utf-8')
@@ -111,21 +97,6 @@ class Connection(GenericClient):
 
         return await self._request(frames)
 
-    async def request_registration_later(self):
-        """
-        Request the remote peer to register.
-        """
-        await asyncio.sleep(self.__registration_timeout)
-
-        if self.domain is None:
-            return await self._notification([b'registration_required'])
-
-    async def request_registration(self):
-        """
-        Request the remote peer to register.
-        """
-        return await self._notification([b'registration_required'])
-
     async def _on_request(self, frames):
         """
         Called whenever a request is received.
@@ -144,13 +115,14 @@ class Broker(AsyncObject):
         self.socket = socket
         self.shared_secret = shared_secret
 
-        self.__connection_timeout = 5.0
+        self.__connection_timeout = 10.0
         self.__connections = {}
         self.__connections_by_domain = {}
         self.__command_handlers = {
             b'register': self.__register_request,
             b'unregister': self.__unregister_request,
             b'call': self.__call_request,
+            b'ping': self.__ping_request,
         }
 
         self.add_cleanup(self.force_disconnections)
@@ -339,6 +311,9 @@ class Broker(AsyncObject):
             token=connection.token,
             args=frames[sep_index + 1:],
         )
+
+    async def __ping_request(self, connection, frames):
+        return
 
     def __verify_service_credentials(self, service_name, credentials):
         salt, hash = credentials

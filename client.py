@@ -16,7 +16,8 @@ async def run():
             )
 
             try:
-                await client.register()
+                await client.wait_registered()
+
                 r = await client.method_call(
                     domain=(b'user', b'bob'),
                     method='send_message',

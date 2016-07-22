@@ -43,6 +43,7 @@ def set_event_loop():
 
 
 DEFAULT_ENDPOINT = 'tcp://127.0.0.1:3333'
+DEFAULT_SHARED_SECRET = b'changethissecret'
 
 
 @contextmanager
@@ -92,6 +93,21 @@ def import_class(dotted_name):
     return getattr(module, class_name)
 
 
+def check_shared_secret(shared_secret):
+    if shared_secret is None:
+        click.echo(
+            click.style(
+                "No shared secret was specified ! A default one will be used."
+                " Production usage is *NOT* recommended.",
+                fg='yellow',
+            ),
+            err=True,
+        )
+        return DEFAULT_SHARED_SECRET
+    else:
+        return b64decode(shared_secret)
+
+
 @click.command()
 @click.option(
     '-s',
@@ -104,18 +120,7 @@ def import_class(dotted_name):
 def broker(shared_secret, endpoints):
     setup_logging()
 
-    if shared_secret is None:
-        click.echo(
-            click.style(
-                "No shared secret was specified ! A default one will be used."
-                " Production usage is *NOT* recommended.",
-                fg='red',
-            ),
-            err=True,
-        )
-        shared_secret = b'changethissecret'
-    else:
-        shared_secret = b64decode(shared_secret)
+    shared_secret = check_shared_secret(shared_secret)
 
     if not endpoints:
         endpoints = [
@@ -140,7 +145,16 @@ def broker(shared_secret, endpoints):
     with allow_interruption(
         (loop, broker.close),
     ):
-        loop.run_until_complete(broker.wait_closed())
+        try:
+            loop.run_until_complete(broker.wait_closed())
+        except Exception as ex:
+            click.echo(
+                click.style(
+                    "Exception while running service: %s" % ex,
+                    fg='red',
+                ),
+                err=True,
+            )
 
     context.close()
     loop.run_until_complete(context.wait_closed())
@@ -161,18 +175,7 @@ def broker(shared_secret, endpoints):
 def service(shared_secret, dotted_name, endpoint):
     setup_logging()
 
-    if shared_secret is None:
-        click.echo(
-            click.style(
-                "No shared secret was specified ! A default one will be used."
-                " Production usage is *NOT* recommended.",
-                fg='red',
-            ),
-            err=True,
-        )
-        shared_secret = b'changethissecret'
-    else:
-        shared_secret = b64decode(shared_secret)
+    shared_secret = check_shared_secret(shared_secret)
 
     service_class = import_class(dotted_name)
     loop = set_event_loop()
@@ -191,7 +194,16 @@ def service(shared_secret, dotted_name, endpoint):
     with allow_interruption(
         (loop, service.close),
     ):
-        loop.run_until_complete(service.wait_closed())
+        try:
+            loop.run_until_complete(service.wait_closed())
+        except Exception as ex:
+            click.echo(
+                click.style(
+                    "Exception while running service: %s" % ex,
+                    fg='red',
+                ),
+                err=True,
+            )
 
     context.close()
     loop.run_until_complete(context.wait_closed())

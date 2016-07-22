@@ -2,6 +2,11 @@
 A client class.
 """
 
+import asyncio
+
+from math import ceil
+from time import perf_counter
+
 from .common import (
     deserialize,
     serialize,
@@ -46,7 +51,39 @@ class Client(GenericClient, metaclass=ClientMeta):
         self.socket = socket
         self.domain = domain
         self.credentials = credentials
-        self.token = None
+        self._token = None
+        self._registered = asyncio.Event(loop=self.loop)
+        self._unregistered = asyncio.Event(loop=self.loop)
+        self._unregistered.set()
+        self.__registration_timeout = 5.0
+        self.__ping_timeout = 5.0
+        self.__ping_interval = 5.0
+        self.add_task(self.__register_loop())
+
+    @property
+    def token(self):
+        return self._token
+
+    @token.setter
+    def token(self, value):
+        if value is None:
+            self._registered.clear()
+            self._unregistered.set()
+            self._token = None
+        else:
+            self._registered.set()
+            self._unregistered.clear()
+            self._token = value
+
+    @property
+    def registered(self):
+        return self._registered.is_set()
+
+    async def wait_registered(self):
+        """
+        Wait for the client instance to be registered.
+        """
+        return await self._registered.wait()
 
     async def register(self):
         """
@@ -60,6 +97,13 @@ class Client(GenericClient, metaclass=ClientMeta):
         frames.extend(self.credentials)
 
         self.token = tuple(await self._request(frames))
+        logger.info("Client is now registered.")
+
+    async def wait_unregistered(self):
+        """
+        Wait for the client instance to be unregistered.
+        """
+        return await self._unregistered.wait()
 
     async def unregister(self):
         """
@@ -68,6 +112,7 @@ class Client(GenericClient, metaclass=ClientMeta):
         await self._request([b'unregister'])
 
         self.token = None
+        logger.info("Client is no longer registered.")
 
     async def call(self, domain, args):
         """
@@ -83,6 +128,14 @@ class Client(GenericClient, metaclass=ClientMeta):
         frames.extend(args)
 
         return await self._request(frames)
+
+    async def ping(self):
+        """
+        Ping the broker.
+        """
+        before = perf_counter()
+        await self._request([b'ping'])
+        return perf_counter() - before
 
     async def method_call(self, domain, method, args=None, kwargs=None):
         """
@@ -150,10 +203,7 @@ class Client(GenericClient, metaclass=ClientMeta):
         """
         type_ = frames.pop(0)
 
-        if type_ == b'registration_required':
-            await self.on_registration_required()
-        else:
-            await self.on_notification(type_, frames)
+        await self.on_notification(type_, frames)
 
     async def on_call(self, domain, token, command, args):
         """
@@ -184,15 +234,59 @@ class Client(GenericClient, metaclass=ClientMeta):
         """
         logger.warning("Received unhandled notification of type %s.", type_)
 
-    async def on_registration_required(self):
-        """
-        Called whenever registration is required.
-        """
-        if self.credentials is None:
-            logger.warning(
-                "Received registration request but no credentials were "
-                "specified.",
-            )
-        else:
-            logger.debug("Received registration request: registering.")
-            await self.register()
+    async def __register_loop(self):
+        min_delay = 1
+        max_delay = 60
+        factor = 1.5
+        delay = 1
+
+        while not self.closing:
+            if self.registered:
+                try:
+                    await asyncio.wait_for(self.ping(), self.__ping_timeout)
+                except asyncio.CancelledError:
+                    raise
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Broker did not reply in %s second(s). Performing "
+                        "implicit unregistration.",
+                        self.__ping_timeout,
+                    )
+                    self.token = None
+                except Exception as ex:
+                    logger.error(
+                        "Ping request failed (%s). Performing implicit "
+                        "unregistration.",
+                        ex,
+                    )
+                    self.token = None
+
+                await asyncio.sleep(self.__ping_interval, loop=self.loop)
+            else:
+                try:
+                    logger.debug("Registration in progress...")
+                    await asyncio.wait_for(
+                        self.register(),
+                        self.__registration_timeout,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Registration did not complete within %s second(s). "
+                        "Retrying in %s second(s).",
+                        self.__registration_timeout,
+                        delay,
+                    )
+                    await asyncio.sleep(delay, loop=self.loop)
+                    delay = min(ceil(delay * factor), max_delay)
+                except Exception as ex:
+                    logger.error(
+                        "Registration failed (%s): retrying in %s second(s).",
+                        ex,
+                        delay,
+                    )
+                    await asyncio.sleep(delay, loop=self.loop)
+                    delay = min(ceil(delay * factor), max_delay)
+                else:
+                    delay = min_delay

@@ -2,11 +2,16 @@
 A service class.
 """
 
+import asyncio
+
 from .client import Client
+from .log import logger as main_logger
 from .security import (
     generate_hash,
     generate_salt,
 )
+
+logger = main_logger.getChild('service')
 
 
 class Service(Client):
@@ -28,7 +33,6 @@ class Service(Client):
             ),
             **kwargs,
         )
-        self.add_task(self.register())
 
     @staticmethod
     def get_credentials(name, shared_secret):
