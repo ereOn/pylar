@@ -6,10 +6,38 @@ from .common import (
     deserialize,
     serialize,
 )
+from .errors import CallError
 from .generic_client import GenericClient
 
 
-class Client(GenericClient):
+class ClientMeta(type):
+    def __new__(cls, name, bases, attrs):
+        command_handlers = attrs.setdefault('_command_handlers', {})
+
+        for field in attrs.values():
+            command_name = getattr(field, '_pylar_command_name', None)
+
+            if command_name is not None:
+                command_handlers[command_name] = field
+
+        return type.__new__(cls, name, bases, attrs)
+
+
+class Client(GenericClient, metaclass=ClientMeta):
+    @staticmethod
+    def command(name=None):
+        """
+        Register a method as a command handler.
+
+        :param name: The name of the command to register.
+        """
+        def decorator(func):
+            func._pylar_command_name = (name or func.__name__).encode('utf-8')
+
+            return func
+
+        return decorator
+
     def __init__(self, *, socket, domain, **kwargs):
         super().__init__(**kwargs)
         self.socket = socket
@@ -27,7 +55,7 @@ class Client(GenericClient):
         frames.append(b'')
         frames.extend(credentials)
 
-        self.token = await self._request(frames)
+        self.token = tuple(await self._request(frames))
 
     async def unregister(self):
         """
@@ -120,4 +148,12 @@ class Client(GenericClient):
         :param args: The additional frames.
         :returns: The result.
         """
-        raise NotImplementedError
+        command_handler = self._command_handlers.get(command)
+
+        if not command_handler:
+            raise CallError(
+                code=404,
+                message="Unknown command.",
+            )
+
+        return await command_handler(self, domain, token, args)

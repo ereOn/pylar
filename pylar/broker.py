@@ -267,7 +267,7 @@ class Broker(AsyncObject):
                 token=(),
                 args=[
                     b'authenticate',
-                ],
+                ] + list(credentials),
             )
 
         if connection.domain:

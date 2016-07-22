@@ -3,7 +3,7 @@ import azmq
 
 from pylar.entry_points import set_event_loop
 from pylar.client import Client
-from pylar.service import Service
+from pylar.services.authentication import AuthenticationService
 
 
 async def run():
@@ -12,19 +12,18 @@ async def run():
             async with context.socket(azmq.DEALER) as socket_b:
                 socket_a.connect('tcp://127.0.0.1:3333')
                 socket_b.connect('tcp://127.0.0.1:3333')
-                service = Service(
+                service = AuthenticationService(
                     socket=socket_a,
                     shared_secret=b'mysupersecret!!!',
-                    name=b'authentication',
                 )
+                service.add_user('bob', 'password')
                 client = Client(
                     socket=socket_b,
                     domain=(b'user', b'bob',),
                 )
 
                 try:
-                    await client.register(())
-                    print("client token: %r" % client.token)
+                    await client.register((b'password',))
                     r = await client.method_call(
                         domain=(b'user', b'bob'),
                         method='send_message',

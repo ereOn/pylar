@@ -2,11 +2,6 @@
 A service class.
 """
 
-from .common import (
-    deserialize,
-    serialize,
-)
-from .async_object import AsyncObject
 from .client import Client
 from .security import (
     generate_hash,
@@ -24,12 +19,15 @@ class Service(Client):
         assert self.name, "No service name was specified."
 
         super().__init__(
-            domain=(b'service', self.name),
+            domain=(b'service', self.name.encode('utf-8')),
             **kwargs,
         )
 
         self.shared_secret = shared_secret
-        credentials = self.get_credentials(self.name, self.shared_secret)
+        credentials = self.get_credentials(
+            self.name.encode('utf-8'),
+            self.shared_secret,
+        )
         self.add_task(self.register(credentials))
 
     @staticmethod
@@ -38,6 +36,3 @@ class Service(Client):
         hash = generate_hash(shared_secret, salt, name)
 
         return (salt, hash)
-
-    async def on_call(self, domain, token, command, args):
-        return [b'okay']
