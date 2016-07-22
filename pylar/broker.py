@@ -43,7 +43,7 @@ class Connection(GenericClient):
 
         # Public attributes.
         self.domain = None
-        self.token = ()
+        self.token = None
 
     def __str__(self):
         return hexlify(self.identity).decode('utf-8')
@@ -91,7 +91,7 @@ class Connection(GenericClient):
 
         frames = list(domain)
         frames.append(b'')
-        frames.extend(token)
+        frames.extend(token or ())
         frames.append(b'')
         frames.extend(args)
 

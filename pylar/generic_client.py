@@ -41,14 +41,6 @@ class GenericClient(AsyncObject):
         for future in list(self.__pending_requests.values()):
             future.cancel()
 
-    def on_task_exception(self, task):
-        """
-        Called whenever a task raises an exception.
-
-        :param task: The task that raised an error.
-        """
-        logger.error("Task %s failed: %s", id(task), task.exception())
-
     # Protected methods.
 
     async def _read(self):
@@ -135,7 +127,7 @@ class GenericClient(AsyncObject):
         assert f is future
 
     async def __receiving_loop(self):
-        while True:
+        while not self.closing:
             frames = await self._read()
 
             try:
@@ -154,7 +146,7 @@ class GenericClient(AsyncObject):
                 pass
 
     async def __heartbeat_loop(self):
-        while True:
+        while not self.closing:
             await asyncio.sleep(self.__ping_interval)
             await self._ping()
 

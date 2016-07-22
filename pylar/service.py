@@ -28,7 +28,8 @@ class Service(Client):
             **kwargs,
         )
 
-        credentials = self.get_credentials(name, shared_secret)
+        self.shared_secret = shared_secret
+        credentials = self.get_credentials(self.name, self.shared_secret)
         self.add_task(self.register(credentials))
 
     @staticmethod

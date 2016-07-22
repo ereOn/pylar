@@ -29,6 +29,7 @@ class AsyncObject(object):
         self._cleanup_functions = []
         self._closing = asyncio.Event(loop=self.loop)
         self._close_task = asyncio.ensure_future(self._close(), loop=self.loop)
+        self.exceptions = []
 
     def add_cleanup(self, func):
         """
@@ -78,15 +79,7 @@ class AsyncObject(object):
             exception = task.exception()
 
             if exception:
-                self.on_task_exception(task)
-
-    def on_task_exception(self, task):
-        """
-        Called whenever a task raises an exception.
-
-        :param task: The task that raised an error.
-        """
-        raise NotImplementedError
+                self.exceptions.append(exception)
 
     async def run_until_closing(self, coro):
         """
@@ -146,6 +139,9 @@ class AsyncObject(object):
         Wait for the instance to be closed.
         """
         await asyncio.shield(self._close_task, loop=self.loop)
+
+        if self.exceptions:
+            raise next(iter(self.exceptions))
 
     # Special methods.
 
