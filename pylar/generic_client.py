@@ -93,6 +93,26 @@ class GenericClient(AsyncObject):
         """
         raise NotImplementedError
 
+    async def _notification(self, frames):
+        """
+        Send a notification.
+
+        :params frames: The frames to send.
+        """
+        request_id = self.__request_id()
+
+        await self.__send_notification(request_id, frames)
+
+    async def _on_notification(self, frames):
+        """
+        Called whenever a notification is received.
+
+        :param frames: The request frames.
+
+        Must be reimplemented by child classes.
+        """
+        raise NotImplementedError
+
     async def _ping(self):
         """
         Send a ping over the connection.
@@ -140,6 +160,8 @@ class GenericClient(AsyncObject):
                 self.add_task(self.__process_request(request_id, frames))
             elif type_ == b'response':
                 self.add_task(self.__process_response(request_id, frames))
+            elif type_ == b'notification':
+                self.add_task(self.__process_notification(request_id, frames))
             elif type_ == b'ping':
                 await self.__send_pong(request_id)
             elif type_ == b'pong':
@@ -206,6 +228,9 @@ class GenericClient(AsyncObject):
                     ),
                 )
 
+    async def __process_notification(self, request_id, frames):
+        await self._on_notification(frames)
+
     async def __send_error_response(self, request_id, code, message):
         await self._write([
             b'response',
@@ -227,6 +252,15 @@ class GenericClient(AsyncObject):
     async def __send_request(self, request_id, args):
         frames = [
             b'request',
+            request_id,
+        ]
+        frames.extend(args)
+
+        await self._write(frames)
+
+    async def __send_notification(self, request_id, args):
+        frames = [
+            b'notification',
             request_id,
         ]
         frames.extend(args)

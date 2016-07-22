@@ -18,17 +18,16 @@ class Service(Client):
         # level.
         assert self.name, "No service name was specified."
 
+        self.shared_secret = shared_secret
+
         super().__init__(
             domain=(b'service', self.name.encode('utf-8')),
+            credentials=self.get_credentials(
+                self.name.encode('utf-8'),
+                self.shared_secret,
+            ),
             **kwargs,
         )
-
-        self.shared_secret = shared_secret
-        credentials = self.get_credentials(
-            self.name.encode('utf-8'),
-            self.shared_secret,
-        )
-        self.add_task(self.register(credentials))
 
     @staticmethod
     def get_credentials(name, shared_secret):

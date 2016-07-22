@@ -42,8 +42,21 @@ class Connection(GenericClient):
         self.add_cleanup(self.__timeout.wait_closed)
 
         # Public attributes.
-        self.domain = None
+        self._domain = asyncio.Future(loop=self.loop)
         self.token = None
+        self.add_task(self.request_registration())
+
+    @property
+    def domain(self):
+        return self._domain.result() if self._domain.done() else None
+
+    @domain.setter
+    def domain(self, value):
+        if value is not None:
+            self._domain.set_result(value)
+        else:
+            self._domain.cancel()
+            self._domain = asyncio.Future(loop=self.loop)
 
     def __str__(self):
         return hexlify(self.identity).decode('utf-8')
@@ -96,6 +109,12 @@ class Connection(GenericClient):
         frames.extend(args)
 
         return await self._request(frames)
+
+    async def request_registration(self):
+        """
+        Request the remote peer to register.
+        """
+        return await self._notification([b'registration_required'])
 
     async def _on_request(self, frames):
         """

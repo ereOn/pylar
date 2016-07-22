@@ -8,6 +8,9 @@ from .common import (
 )
 from .errors import CallError
 from .generic_client import GenericClient
+from .log import logger as main_logger
+
+logger = main_logger.getChild('client')
 
 
 class ClientMeta(type):
@@ -38,22 +41,23 @@ class Client(GenericClient, metaclass=ClientMeta):
 
         return decorator
 
-    def __init__(self, *, socket, domain, **kwargs):
+    def __init__(self, *, socket, domain, credentials=None, **kwargs):
         super().__init__(**kwargs)
         self.socket = socket
         self.domain = domain
+        self.credentials = credentials
         self.token = None
 
-    async def register(self, credentials):
+    async def register(self):
         """
         Register on the broker.
-
-        :param credentials: The credentials to use for registration.
         """
+        assert self.credentials, "Can't register without credentials."
+
         frames = [b'register']
         frames.extend(self.domain)
         frames.append(b'')
-        frames.extend(credentials)
+        frames.extend(self.credentials)
 
         self.token = tuple(await self._request(frames))
 
@@ -138,6 +142,19 @@ class Client(GenericClient, metaclass=ClientMeta):
         command = frames.pop(0)
         return await self.on_call(domain, token, command, frames)
 
+    async def _on_notification(self, frames):
+        """
+        Called whenever a notification is received.
+
+        :param frames: The request frames.
+        """
+        type_ = frames.pop(0)
+
+        if type_ == b'registration_required':
+            await self.on_registration_required()
+        else:
+            await self.on_notification(type_, frames)
+
     async def on_call(self, domain, token, command, args):
         """
         Called whenever a call is received.
@@ -157,3 +174,24 @@ class Client(GenericClient, metaclass=ClientMeta):
             )
 
         return await command_handler(self, domain, token, args)
+
+    async def on_notification(self, type_, args):
+        """
+        Called whenever a notification is received.
+
+        :param type_: The type of the notification.
+        :param args: The arguments.
+        """
+        logger.warning("Received unhandled notification of type %s.", type_)
+
+    async def on_registration_required(self):
+        """
+        Called whenever registration is required.
+        """
+        if self.credentials is None:
+            logger.warning(
+                "Received registration request but no credentials were "
+                "specified.",
+            )
+        else:
+            await self.register()

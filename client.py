@@ -12,10 +12,11 @@ async def run():
             client = Client(
                 socket=socket,
                 domain=(b'user', b'bob',),
+                credentials=(b'password',),
             )
 
             try:
-                await client.register((b'password',))
+                await client.register()
                 r = await client.method_call(
                     domain=(b'user', b'bob'),
                     method='send_message',
