@@ -55,13 +55,38 @@ class AsyncObject(object):
         closing.
 
         :param coro: The coroutine to execute.
+        :returns: The task.
         """
         task = asyncio.ensure_future(
             self.run_until_closing(coro),
             loop=self.loop,
         )
-        task.add_done_callback(self.remove_cleanup)
+        task.add_done_callback(self.on_task_done)
         self.add_cleanup(task)
+
+        return task
+
+    def on_task_done(self, task):
+        """
+        Called whenever a task is done.
+
+        :param task: The task that completed.
+        """
+        self.remove_cleanup(task)
+
+        if not task.cancelled():
+            exception = task.exception()
+
+            if exception:
+                self.on_task_exception(task)
+
+    def on_task_exception(self, task):
+        """
+        Called whenever a task raises an exception.
+
+        :param task: The task that raised an error.
+        """
+        raise NotImplementedError
 
     async def run_until_closing(self, coro):
         """
