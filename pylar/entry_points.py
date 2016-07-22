@@ -9,6 +9,7 @@ import click
 import logging
 import signal
 import sys
+import importlib
 
 from azmq import Context
 from base64 import b64decode
@@ -84,6 +85,13 @@ def allow_interruption(*callbacks):
             signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 
+def import_class(dotted_name):
+    module_name, class_name = dotted_name.rsplit('.', 1)
+    module = importlib.import_module(module_name)
+
+    return getattr(module, class_name)
+
+
 @click.command()
 @click.option(
     '-s',
@@ -122,7 +130,6 @@ def broker(shared_secret, endpoints):
         socket.bind(endpoint)
 
     broker = Broker(
-        context=context,
         socket=socket,
         shared_secret=shared_secret,
         loop=loop,
@@ -142,17 +149,49 @@ def broker(shared_secret, endpoints):
 
 
 @click.command()
+@click.option(
+    '-s',
+    '--shared-secret',
+    default=None,
+    help="A shared secret in base64 format that the authentication services "
+    "use too.",
+)
+@click.argument('dotted_name')
 @click.argument('endpoint', default=DEFAULT_ENDPOINT)
-def service(endpoint):
+def service(shared_secret, dotted_name, endpoint):
+    setup_logging()
+
+    if shared_secret is None:
+        click.echo(
+            click.style(
+                "No shared secret was specified ! A default one will be used."
+                " Production usage is *NOT* recommended.",
+                fg='red',
+            ),
+            err=True,
+        )
+        shared_secret = b'changethissecret'
+    else:
+        shared_secret = b64decode(shared_secret)
+
+    service_class = import_class(dotted_name)
     loop = set_event_loop()
     context = Context(loop=loop)
+    socket = context.socket(azmq.DEALER)
+    socket.connect(endpoint)
+
+    service = service_class(
+        socket=socket,
+        shared_secret=shared_secret,
+        loop=loop,
+    )
 
     click.echo("Service started connected to: %s." % endpoint)
 
     with allow_interruption(
-        (loop, context.close),
+        (loop, service.close),
     ):
-        loop.run_until_complete(context.wait_closed())
+        loop.run_until_complete(service.wait_closed())
 
     context.close()
     loop.run_until_complete(context.wait_closed())

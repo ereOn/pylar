@@ -3,7 +3,10 @@ Authentication service.
 """
 
 from ..errors import CallError
+from ..log import logger as main_logger
 from ..service import Service
+
+logger = main_logger.getChild('authentication_service')
 
 
 class AuthenticationService(Service):
@@ -36,16 +39,25 @@ class AuthenticationService(Service):
 
     @Service.command('authenticate')
     async def _authenticate(self, domain, token, args):
+        logger.debug("Received authentication request for: %s", domain)
         password, = args
         ref_password = self._users.get(domain)
 
         if not ref_password:
+            logger.warning(
+                "Authentication failed for %s: unknown username.",
+                domain,
+            )
             raise CallError(
                 code=401,
                 message="Unknown username.",
             )
 
         if ref_password != password:
+            logger.warning(
+                "Authentication failed for %s: invalid password.",
+                domain,
+            )
             raise CallError(
                 code=401,
                 message="Invalid password.",

@@ -110,9 +110,8 @@ class Broker(AsyncObject):
     SERVICE_DOMAIN_PREFIX = b'service'
     SERVICE_AUTHENTICATION_DOMAIN = (SERVICE_DOMAIN_PREFIX, b'authentication')
 
-    def __init__(self, *, context, socket, shared_secret, **kwargs):
+    def __init__(self, *, socket, shared_secret, **kwargs):
         super().__init__(**kwargs)
-        self.context = context
         self.socket = socket
         self.shared_secret = shared_secret
 
@@ -254,6 +253,11 @@ class Broker(AsyncObject):
             )
 
             if not connections:
+                logger.warning(
+                    "Received authentication request for %s but no "
+                    "authentication service is currently available !",
+                    domain,
+                )
                 raise CallError(
                     code=503,
                     message="Authentication service unavailable.",
