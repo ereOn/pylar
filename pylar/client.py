@@ -137,6 +137,10 @@ class Client(GenericClient, metaclass=ClientMeta):
         await self._request([b'ping'])
         return perf_counter() - before
 
+    async def describe(self):
+        result = await self.call((b'service', b'rpc'), [b'describe'])
+        return deserialize(result[0])
+
     async def method_call(self, domain, method, args=None, kwargs=None):
         """
         Remote call to a specified domain.
