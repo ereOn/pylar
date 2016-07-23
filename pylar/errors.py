@@ -7,6 +7,11 @@ class PylarError(RuntimeError):
     pass
 
 
+class RequestAborted(PylarError):
+    def __init__(self):
+        super().__init__("The request was aborted.")
+
+
 class CallError(PylarError):
     def __init__(self, code, message):
         super().__init__(

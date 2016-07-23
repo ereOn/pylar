@@ -2,9 +2,9 @@
 Authentication service.
 """
 
-from ..errors import CallError
-from ..log import logger as main_logger
-from ..service import Service
+from .errors import CallError
+from .log import logger as main_logger
+from .service import Service
 
 logger = main_logger.getChild('authentication_service')
 

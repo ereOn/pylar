@@ -10,8 +10,9 @@ from functools import partial
 
 from .async_object import AsyncObject
 from .errors import (
-    InvalidReplyError,
     CallError,
+    InvalidReplyError,
+    RequestAborted,
 )
 from .log import logger as main_logger
 
@@ -165,6 +166,9 @@ class GenericClient(AsyncObject):
                 408,
                 "Request was cancelled.",
             )
+        except RequestAborted:
+            # The request was aborted: we exit without sending a reply.
+            pass
         except CallError as ex:
             await self.__send_error_response(
                 request_id,

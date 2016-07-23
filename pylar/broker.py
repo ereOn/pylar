@@ -13,7 +13,10 @@ from collections import deque
 from functools import partial
 
 from .async_object import AsyncObject
-from .errors import CallError
+from .errors import (
+    CallError,
+    RequestAborted,
+)
 from .generic_client import GenericClient
 from .log import logger as main_logger
 from .security import verify_hash
@@ -313,7 +316,8 @@ class Broker(AsyncObject):
         )
 
     async def __ping_request(self, connection, frames):
-        return
+        if not connection.domain:
+            raise RequestAborted
 
     def __verify_service_credentials(self, service_name, credentials):
         salt, hash = credentials
