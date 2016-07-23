@@ -31,6 +31,81 @@ class ClientMeta(type):
         return type.__new__(cls, name, bases, attrs)
 
 
+class Registration(object):
+    def __init__(self, client, domain, credentials):
+        self.client = client
+        self.domain = domain
+        self.credentials = credentials
+        self.task = self.client.add_task(self.__register_loop()),
+
+        self.__registration_timeout = 5.0
+        self.__registered = asyncio.Event(loop=client.loop)
+        self.__unregistered = asyncio.Event(loop=client.loop)
+
+        self.token = None
+
+    @property
+    def token(self):
+        return self.__token
+
+    @token.setter
+    def token(self, value):
+        self.__token = value
+
+        if value is None:
+            self.__unregistered.set()
+            self.__registered.clear()
+        else:
+            self.__unregistered.clear()
+            self.__registered.set()
+
+    async def wait_registered(self):
+        await self.__registered.wait()
+
+    async def wait_unregistered(self):
+        await self.__unregistered.wait()
+
+    async def __register_loop(self):
+        min_delay = 1
+        max_delay = 60
+        factor = 1.5
+        delay = 1
+
+        while not self.client.closing:
+            await self.wait_unregistered()
+
+            try:
+                logger.debug("Registration for %s in progress...", self.domain)
+                self.token = await asyncio.wait_for(
+                    self.client._register(
+                        domain=self.domain,
+                        credentials=self.credentials,
+                    ),
+                    self.__registration_timeout,
+                )
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Registration did not complete within %s second(s). "
+                    "Retrying in %s second(s).",
+                    self.__registration_timeout,
+                    delay,
+                )
+                await asyncio.sleep(delay, loop=self.client.loop)
+                delay = min(ceil(delay * factor), max_delay)
+            except Exception as ex:
+                logger.error(
+                    "Registration failed (%s): retrying in %s second(s).",
+                    ex,
+                    delay,
+                )
+                await asyncio.sleep(delay, loop=self.client.loop)
+                delay = min(ceil(delay * factor), max_delay)
+            else:
+                delay = min_delay
+
+
 class Client(GenericClient, metaclass=ClientMeta):
     @staticmethod
     def command(name=None):
@@ -46,106 +121,48 @@ class Client(GenericClient, metaclass=ClientMeta):
 
         return decorator
 
-    def __init__(self, *, socket, domain, credentials=None, **kwargs):
+    def __init__(self, *, socket, **kwargs):
         super().__init__(**kwargs)
         self.socket = socket
-        self.domain = domain
-        self.credentials = credentials
         self._token = None
         self._registered = asyncio.Event(loop=self.loop)
         self._unregistered = asyncio.Event(loop=self.loop)
         self._unregistered.set()
-        self.__registration_timeout = 5.0
         self.__ping_timeout = 5.0
         self.__ping_interval = 5.0
-        self.add_task(self.__register_loop())
+        self.__has_registrations = asyncio.Event(loop=self.loop)
+        self.__registrations = {}
+        self.add_task(self.__ping_loop())
 
-    @property
-    def token(self):
-        return self._token
+    def add_registration(self, domain, credentials):
+        assert domain not in self.__registrations
 
-    @token.setter
-    def token(self, value):
-        if value is None:
-            self._registered.clear()
-            self._unregistered.set()
-            self._token = None
-        else:
-            self._registered.set()
-            self._unregistered.clear()
-            self._token = value
+        self.__registrations[domain] = registration = Registration(
+            client=self,
+            domain=domain,
+            credentials=credentials,
+        )
+        self.__has_registrations.set()
 
-    @property
-    def registered(self):
-        return self._registered.is_set()
+        return registration
 
-    async def wait_registered(self):
-        """
-        Wait for the client instance to be registered.
-        """
-        return await self._registered.wait()
-
-    async def register(self):
-        """
-        Register on the broker.
-        """
-        assert self.credentials, "Can't register without credentials."
-
-        frames = [b'register']
-        frames.extend(self.domain)
-        frames.append(b'')
-        frames.extend(self.credentials)
-
-        self.token = tuple(await self._request(frames))
-        logger.info("Client is now registered.")
-
-    async def wait_unregistered(self):
-        """
-        Wait for the client instance to be unregistered.
-        """
-        return await self._unregistered.wait()
-
-    async def unregister(self):
-        """
-        Unregister from the broker.
-        """
-        await self._request([b'unregister'])
-
-        self.token = None
-        logger.info("Client is no longer registered.")
-
-    async def call(self, domain, args):
-        """
-        Send a generic call to a specified domain.
-
-        :param domain: The target domain.
-        :param args: A list of frames to pass.
-        :returns: The call results.
-        """
-        frames = [b'call']
-        frames.extend(domain)
-        frames.append(b'')
-        frames.extend(args)
-
-        return await self._request(frames)
-
-    async def ping(self):
-        """
-        Ping the broker.
-        """
-        before = perf_counter()
-        await self._request([b'ping'])
-        return perf_counter() - before
-
-    async def describe(self):
-        result = await self.call((b'service', b'rpc'), [b'describe'])
+    async def describe(self, domain):
+        result = await self.call(domain, (b'service', b'rpc'), [b'describe'])
         return deserialize(result[0])
 
-    async def method_call(self, domain, method, args=None, kwargs=None):
+    async def method_call(
+        self,
+        domain,
+        target_domain,
+        method,
+        args=None,
+        kwargs=None,
+    ):
         """
         Remote call to a specified domain.
 
-        :param domain: The target domain.
+        :param domain: The domain.
+        :param target_domain: The target domain.
         :param method: The method to call.
         :param args: A list of arguments to pass.
         :param kwargs: A list of named arguments to pass.
@@ -158,7 +175,7 @@ class Client(GenericClient, metaclass=ClientMeta):
             serialize(dict(kwargs or {})),
         ]
 
-        result = await self.call(domain, frames)
+        result = await self.call(domain, target_domain, frames)
         return deserialize(result[0])
 
     # Protected methods.
@@ -183,6 +200,62 @@ class Client(GenericClient, metaclass=ClientMeta):
         frames.insert(0, b'')
         await self.socket.send_multipart(frames)
 
+    async def _register(self, domain, credentials):
+        """
+        Register on the broker.
+
+        :param domain: The domain to register for.
+        :param credentials: The credentials for the domain.
+        :returns: The authentication token.
+        """
+        frames = [b'register']
+        frames.extend(domain)
+        frames.append(b'')
+        frames.extend(credentials)
+
+        token = tuple(await self._request(frames))
+        logger.info("Client is now registered as %s.", domain)
+
+        return token
+
+    async def _unregister(self, domain):
+        """
+        Unregister from the broker.
+        """
+        frames = [b'unregister']
+        frames.extend(domain)
+        frames.append(b'')
+
+        await self._request(frames)
+
+        logger.info("Client is no longer registered as %s.", domain)
+
+    async def _call(self, domain, target_domain, args):
+        """
+        Send a generic call to a specified domain.
+
+        :param domain: The domain.
+        :param target_domain: The target domain.
+        :param args: A list of frames to pass.
+        :returns: The call results.
+        """
+        frames = [b'call']
+        frames.extend(domain)
+        frames.append(b'')
+        frames.extend(target_domain)
+        frames.append(b'')
+        frames.extend(args)
+
+        return await self._request(frames)
+
+    async def _ping(self):
+        """
+        Ping the broker.
+        """
+        before = perf_counter()
+        await self._request([b'ping'])
+        return perf_counter() - before
+
     async def _on_request(self, frames):
         """
         Called whenever a request is received.
@@ -194,10 +267,19 @@ class Client(GenericClient, metaclass=ClientMeta):
         domain = tuple(frames[:sep_index])
         del frames[:sep_index + 1]
         sep_index = frames.index(b'')
-        token = tuple(frames[:sep_index])
+        source_domain = tuple(frames[:sep_index])
         del frames[:sep_index + 1]
+        sep_index = frames.index(b'')
+        source_token = tuple(frames[:sep_index])
         command = frames.pop(0)
-        return await self.on_call(domain, token, command, frames)
+
+        return await self.on_call(
+            domain,
+            source_domain,
+            source_token,
+            command,
+            frames,
+        )
 
     async def _on_notification(self, frames):
         """
@@ -209,12 +291,20 @@ class Client(GenericClient, metaclass=ClientMeta):
 
         await self.on_notification(type_, frames)
 
-    async def on_call(self, domain, token, command, args):
+    async def on_call(
+        self,
+        domain,
+        source_domain,
+        source_token,
+        command,
+        args,
+    ):
         """
         Called whenever a call is received.
 
-        :param domain: The caller's domain.
-        :param token: The caller's token.
+        :param domain: The called domain.
+        :param source_domain: The caller's domain.
+        :param source_token: The caller's token.
         :param command: The command.
         :param args: The additional frames.
         :returns: The result.
@@ -227,7 +317,13 @@ class Client(GenericClient, metaclass=ClientMeta):
                 message="Unknown command.",
             )
 
-        return await command_handler(self, domain, token, args)
+        return await command_handler(
+            self,
+            domain,
+            source_domain,
+            source_token,
+            args,
+        )
 
     async def on_notification(self, type_, args):
         """
@@ -238,59 +334,27 @@ class Client(GenericClient, metaclass=ClientMeta):
         """
         logger.warning("Received unhandled notification of type %s.", type_)
 
-    async def __register_loop(self):
-        min_delay = 1
-        max_delay = 60
-        factor = 1.5
-        delay = 1
-
+    async def __ping_loop(self):
         while not self.closing:
-            if self.registered:
-                try:
-                    await asyncio.wait_for(self.ping(), self.__ping_timeout)
-                except asyncio.CancelledError:
-                    raise
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "Broker did not reply in %s second(s). Performing "
-                        "implicit unregistration.",
-                        self.__ping_timeout,
-                    )
-                    self.token = None
-                except Exception as ex:
-                    logger.error(
-                        "Ping request failed (%s). Performing implicit "
-                        "unregistration.",
-                        ex,
-                    )
-                    self.token = None
+            await self.__has_registrations.wait()
 
-                await asyncio.sleep(self.__ping_interval, loop=self.loop)
-            else:
-                try:
-                    logger.debug("Registration in progress...")
-                    await asyncio.wait_for(
-                        self.register(),
-                        self.__registration_timeout,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "Registration did not complete within %s second(s). "
-                        "Retrying in %s second(s).",
-                        self.__registration_timeout,
-                        delay,
-                    )
-                    await asyncio.sleep(delay, loop=self.loop)
-                    delay = min(ceil(delay * factor), max_delay)
-                except Exception as ex:
-                    logger.error(
-                        "Registration failed (%s): retrying in %s second(s).",
-                        ex,
-                        delay,
-                    )
-                    await asyncio.sleep(delay, loop=self.loop)
-                    delay = min(ceil(delay * factor), max_delay)
-                else:
-                    delay = min_delay
+            try:
+                await asyncio.wait_for(self._ping(), self.__ping_timeout)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Broker did not reply in %s second(s). Performing "
+                    "implicit unregistration.",
+                    self.__ping_timeout,
+                )
+                self.token = None
+            except Exception as ex:
+                logger.error(
+                    "Ping request failed (%s). Performing implicit "
+                    "unregistration.",
+                    ex,
+                )
+                self.token = None
+
+            await asyncio.sleep(self.__ping_interval, loop=self.loop)

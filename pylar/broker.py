@@ -13,10 +13,7 @@ from collections import deque
 from functools import partial
 
 from .async_object import AsyncObject
-from .errors import (
-    CallError,
-    RequestAborted,
-)
+from .errors import CallError
 from .generic_client import GenericClient
 from .log import logger as main_logger
 from .security import verify_hash
@@ -45,8 +42,7 @@ class Connection(GenericClient):
         self.add_cleanup(self.__timeout.wait_closed)
 
         # Public attributes.
-        self.domain = None
-        self.token = None
+        self.domains = {}
 
     def __str__(self):
         return hexlify(self.identity).decode('utf-8')
@@ -83,16 +79,22 @@ class Connection(GenericClient):
         frames.insert(0, self.identity)
         await self.socket.send_multipart(frames)
 
-    async def call(self, domain, token, args):
+    async def call(self, domain, source_domain, source_token, args):
         """
-        Send a generic call to a specified domain.
+        Send a generic call from a specified domain.
 
+        :param domain: The domain for which the call is destined.
+        :param source_domain: The source domain in behalf of which the call is
+            made.
+        :param source_token: The token for the source domain.
         :param args: A list of frames to pass.
         :returns: The call results.
         """
         assert domain is not None
 
         frames = list(domain)
+        frames.append(b'')
+        frames.extend(source_domain or ())
         frames.append(b'')
         frames.extend(token or ())
         frames.append(b'')
@@ -125,7 +127,6 @@ class Broker(AsyncObject):
             b'register': self.__register_request,
             b'unregister': self.__unregister_request,
             b'call': self.__call_request,
-            b'ping': self.__ping_request,
         }
 
         self.add_cleanup(self.force_disconnections)
@@ -179,8 +180,8 @@ class Broker(AsyncObject):
         return connection
 
     def __remove_connection(self, connection):
-        if connection.domain:
-            self.__unregister_connection(connection)
+        for domain in list(connection.domains):
+            self.__unregister_connection(connection, domain)
 
         del self.__connections[connection.identity]
         logger.debug("Connection with %s removed.", connection)
@@ -194,29 +195,28 @@ class Broker(AsyncObject):
             logger.info("Domain %s is now available.", domain)
 
         connections.append(connection)
-        connection.domain = domain
-        connection.token = token
+        connection.domains[domain] = token
         logger.debug(
             "Registered domain %s for connection %s.",
             domain,
             connection,
         )
 
-    def __unregister_connection(self, connection):
-        connections = self.__connections_by_domain[connection.domain]
+    def __unregister_connection(self, connection, domain):
+        connections = self.__connections_by_domain[domain]
         connections.remove(connection)
 
         logger.debug(
             "Unregistered domain %s for connection %s.",
-            connection.domain,
+            domain,
             connection,
         )
 
         if not connections:
-            del self.__connections_by_domain[connection.domain]
-            logger.info("Domain %s is now unavailable.", connection.domain)
+            del self.__connections_by_domain[domain]
+            logger.info("Domain %s is now unavailable.", domain)
 
-        connection.domain = None
+        del connection.domains[domain]
 
     async def __receiving_loop(self):
         while True:
@@ -230,17 +230,21 @@ class Broker(AsyncObject):
 
     async def __process_request(self, connection, frames):
         command = frames.pop(0)
+
+        if command == b'ping':
+            return []
+
+        sep_index = frames.index(b'')
+        domain = tuple(frames[:sep_index])
         handler = self.__command_handlers.get(command)
 
         if not handler:
             raise CallError(code=400, message="Bad request.")
 
-        return await handler(connection, frames)
+        return await handler(connection, domain, frames[sep_index + 1:])
 
-    async def __register_request(self, connection, frames):
-        sep_index = frames.index(b'')
-        domain = tuple(frames[:sep_index])
-        credentials = tuple(frames[sep_index + 1:])
+    async def __register_request(self, connection, domain, frames):
+        credentials = tuple(frames)
 
         # Services are authenticated via a shared secret.
         if domain[0] == self.SERVICE_DOMAIN_PREFIX:
@@ -271,53 +275,50 @@ class Broker(AsyncObject):
             connections.rotate(-1)
 
             token = await auth_connection.call(
-                domain=domain,
-                token=(),
+                domain=self.SERVICE_AUTHENTICATION_DOMAIN,
+                source_domain=domain,
+                source_token=(),
                 args=[
                     b'authenticate',
                 ] + list(credentials),
             )
 
-        if connection.domain:
-            self.__unregister_connection(connection)
+        if domain in connection.domains:
+            self.__unregister_connection(connection, domain)
 
         self.__register_connection(connection, domain, token)
 
         return token
 
-    async def __unregister_request(self, connection, frames):
-        if connection.domain:
-            self.__unregister_connection(connection)
+    async def __unregister_request(self, connection, domain, frames):
+        self.__unregister_connection(connection, domain)
 
-    async def __call_request(self, connection, frames):
-        if not connection.domain:
+    async def __call_request(self, connection, domain, frames):
+        if domain not in connection.domains:
             raise CallError(
                 code=412,
                 message="Not registered.",
             )
 
         sep_index = frames.index(b'')
-        domain = tuple(frames[:sep_index])
-        connections = self.__connections_by_domain.get(domain)
+        target_domain = tuple(frames[:sep_index])
+        connections = self.__connections_by_domain.get(target_domain)
 
         if not connections:
             raise CallError(
                 code=404,
-                message="No such domain: %r." % (domain,),
+                message="No such domain: %r." % (target_domain,),
             )
 
         target_connection = connections[0]
         connections.rotate(-1)
 
         return await target_connection.call(
-            domain=connection.domain,
-            token=connection.token,
+            domain=target_domain,
+            source_domain=domain,
+            source_token=connection.domains[domain],
             args=frames[sep_index + 1:],
         )
-
-    async def __ping_request(self, connection, frames):
-        if not connection.domain:
-            raise RequestAborted
 
     def __verify_service_credentials(self, service_name, credentials):
         salt, hash = credentials

@@ -25,13 +25,13 @@ class Service(Client):
 
         self.shared_secret = shared_secret
 
-        super().__init__(
+        super().__init__(**kwargs)
+        self.add_registration(
             domain=(b'service', self.name.encode('utf-8')),
             credentials=self.get_credentials(
                 self.name.encode('utf-8'),
                 self.shared_secret,
             ),
-            **kwargs,
         )
 
     @staticmethod

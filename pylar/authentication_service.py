@@ -40,8 +40,8 @@ class AuthenticationService(Service):
         self._users.pop(domain)
 
     @Service.command('authenticate')
-    async def _authenticate(self, domain, token, args):
-        logger.debug("Received authentication request for: %s", domain)
+    async def _authenticate(self, domain, source_domain, source_token, args):
+        logger.debug("Received authentication request for: %s", source_domain)
         password, = args
         ref_password = self._users.get(domain)
 
