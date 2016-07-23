@@ -79,16 +79,16 @@ class Connection(GenericClient):
         frames.insert(0, self.identity)
         await self.socket.send_multipart(frames)
 
-    async def call(self, domain, source_domain, source_token, args):
+    async def request(self, domain, source_domain, source_token, args):
         """
-        Send a generic call from a specified domain.
+        Send a generic request from a specified domain.
 
-        :param domain: The domain for which the call is destined.
-        :param source_domain: The source domain in behalf of which the call is
-            made.
+        :param domain: The domain for which the request is destined.
+        :param source_domain: The source domain in behalf of which the request
+            is made.
         :param source_token: The token for the source domain.
         :param args: A list of frames to pass.
-        :returns: The call results.
+        :returns: The request result.
         """
         assert domain is not None
 
@@ -126,7 +126,7 @@ class Broker(AsyncObject):
         self.__command_handlers = {
             b'register': self.__register_request,
             b'unregister': self.__unregister_request,
-            b'call': self.__call_request,
+            b'request': self.__request_request,
         }
 
         self.add_cleanup(self.force_disconnections)
@@ -274,7 +274,7 @@ class Broker(AsyncObject):
             auth_connection = connections[0]
             connections.rotate(-1)
 
-            token = await auth_connection.call(
+            token = await auth_connection.request(
                 domain=self.SERVICE_AUTHENTICATION_DOMAIN,
                 source_domain=domain,
                 source_token=(),
@@ -293,7 +293,7 @@ class Broker(AsyncObject):
     async def __unregister_request(self, connection, domain, frames):
         self.__unregister_connection(connection, domain)
 
-    async def __call_request(self, connection, domain, frames):
+    async def __request_request(self, connection, domain, frames):
         if domain not in connection.domains:
             raise CallError(
                 code=412,
@@ -313,7 +313,7 @@ class Broker(AsyncObject):
         target_connection = connections[0]
         connections.rotate(-1)
 
-        return await target_connection.call(
+        return await target_connection.request(
             domain=target_domain,
             source_domain=domain,
             source_token=connection.domains[domain],

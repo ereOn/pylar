@@ -31,7 +31,7 @@ class ClientMeta(type):
         return type.__new__(cls, name, bases, attrs)
 
 
-class Registration(object):
+class ClientProxy(object):
     def __init__(self, client, domain, credentials):
         self.client = client
         self.domain = domain
@@ -64,6 +64,38 @@ class Registration(object):
 
     async def wait_unregistered(self):
         await self.__unregistered.wait()
+
+    async def on_request(
+        self,
+        source_domain,
+        source_token,
+        command,
+        args,
+    ):
+        """
+        Called whenever a request is received.
+
+        :param source_domain: The caller's domain.
+        :param source_token: The caller's token.
+        :param command: The command.
+        :param args: The additional frames.
+        :returns: The result.
+        """
+        command_handler = self._command_handlers.get(command)
+
+        if not command_handler:
+            raise CallError(
+                code=404,
+                message="Unknown command.",
+            )
+
+        return await command_handler(
+            self,
+            domain,
+            source_domain,
+            source_token,
+            args,
+        )
 
     async def __register_loop(self):
         min_delay = 1
@@ -131,13 +163,13 @@ class Client(GenericClient, metaclass=ClientMeta):
         self.__ping_timeout = 5.0
         self.__ping_interval = 5.0
         self.__has_registrations = asyncio.Event(loop=self.loop)
-        self.__registrations = {}
+        self.__client_proxies = {}
         self.add_task(self.__ping_loop())
 
     def add_registration(self, domain, credentials):
-        assert domain not in self.__registrations
+        assert domain not in self.__client_proxies
 
-        self.__registrations[domain] = registration = Registration(
+        self.__client_proxies[domain] = registration = ClientProxy(
             client=self,
             domain=domain,
             credentials=credentials,
@@ -147,7 +179,7 @@ class Client(GenericClient, metaclass=ClientMeta):
         return registration
 
     async def describe(self, domain):
-        result = await self.call(domain, (b'service', b'rpc'), [b'describe'])
+        result = await self._request(domain, (b'service', b'rpc'), [b'describe'])
         return deserialize(result[0])
 
     async def method_call(
@@ -175,7 +207,7 @@ class Client(GenericClient, metaclass=ClientMeta):
             serialize(dict(kwargs or {})),
         ]
 
-        result = await self.call(domain, target_domain, frames)
+        result = await self._request(domain, target_domain, frames)
         return deserialize(result[0])
 
     # Protected methods.
@@ -213,7 +245,7 @@ class Client(GenericClient, metaclass=ClientMeta):
         frames.append(b'')
         frames.extend(credentials)
 
-        token = tuple(await self._request(frames))
+        token = tuple(await super()._request(frames))
         logger.info("Client is now registered as %s.", domain)
 
         return token
@@ -226,34 +258,34 @@ class Client(GenericClient, metaclass=ClientMeta):
         frames.extend(domain)
         frames.append(b'')
 
-        await self._request(frames)
+        await super()._request(frames)
 
         logger.info("Client is no longer registered as %s.", domain)
 
-    async def _call(self, domain, target_domain, args):
+    async def _request(self, domain, target_domain, args):
         """
-        Send a generic call to a specified domain.
+        Send a generic request to a specified domain.
 
         :param domain: The domain.
         :param target_domain: The target domain.
         :param args: A list of frames to pass.
-        :returns: The call results.
+        :returns: The request result.
         """
-        frames = [b'call']
+        frames = [b'request']
         frames.extend(domain)
         frames.append(b'')
         frames.extend(target_domain)
         frames.append(b'')
         frames.extend(args)
 
-        return await self._request(frames)
+        return await super()._request(frames)
 
     async def _ping(self):
         """
         Ping the broker.
         """
         before = perf_counter()
-        await self._request([b'ping'])
+        await super()._request([b'ping'])
         return perf_counter() - before
 
     async def _on_request(self, frames):
@@ -266,6 +298,15 @@ class Client(GenericClient, metaclass=ClientMeta):
         sep_index = frames.index(b'')
         domain = tuple(frames[:sep_index])
         del frames[:sep_index + 1]
+
+        registration = self.__client_proxies.get(domain)
+
+        if not registration:
+            raise CallError(
+                code=404,
+                message="Client not found.",
+            )
+
         sep_index = frames.index(b'')
         source_domain = tuple(frames[:sep_index])
         del frames[:sep_index + 1]
@@ -273,8 +314,7 @@ class Client(GenericClient, metaclass=ClientMeta):
         source_token = tuple(frames[:sep_index])
         command = frames.pop(0)
 
-        return await self.on_call(
-            domain,
+        return await registration.on_request(
             source_domain,
             source_token,
             command,
@@ -290,40 +330,6 @@ class Client(GenericClient, metaclass=ClientMeta):
         type_ = frames.pop(0)
 
         await self.on_notification(type_, frames)
-
-    async def on_call(
-        self,
-        domain,
-        source_domain,
-        source_token,
-        command,
-        args,
-    ):
-        """
-        Called whenever a call is received.
-
-        :param domain: The called domain.
-        :param source_domain: The caller's domain.
-        :param source_token: The caller's token.
-        :param command: The command.
-        :param args: The additional frames.
-        :returns: The result.
-        """
-        command_handler = self._command_handlers.get(command)
-
-        if not command_handler:
-            raise CallError(
-                code=404,
-                message="Unknown command.",
-            )
-
-        return await command_handler(
-            self,
-            domain,
-            source_domain,
-            source_token,
-            args,
-        )
 
     async def on_notification(self, type_, args):
         """
@@ -348,13 +354,18 @@ class Client(GenericClient, metaclass=ClientMeta):
                     "implicit unregistration.",
                     self.__ping_timeout,
                 )
-                self.token = None
+
+                for client_proxy in self.__client_proxies.values():
+                    client_proxy.token = None
+
             except Exception as ex:
                 logger.error(
                     "Ping request failed (%s). Performing implicit "
                     "unregistration.",
                     ex,
                 )
-                self.token = None
+
+                for client_proxy in self.__client_proxies.values():
+                    client_proxy.token = None
 
             await asyncio.sleep(self.__ping_interval, loop=self.loop)
