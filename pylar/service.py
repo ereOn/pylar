@@ -3,6 +3,9 @@ A service class.
 """
 
 import asyncio
+import struct
+
+from io import BytesIO
 
 from .client import Client
 from .log import logger as main_logger
@@ -27,7 +30,7 @@ class Service(Client):
 
         super().__init__(**kwargs)
         self.add_registration(
-            domain=(b'service', self.name.encode('utf-8')),
+            domain=b'service/%s' % self.name.encode('utf-8'),
             credentials=self.get_credentials(
                 self.name.encode('utf-8'),
                 self.shared_secret,
@@ -39,4 +42,8 @@ class Service(Client):
         salt = generate_salt()
         hash = generate_hash(shared_secret, salt, name)
 
-        return (salt, hash)
+        buf = BytesIO()
+        buf.write(struct.pack('B', len(salt)))
+        buf.write(salt)
+        buf.write(hash)
+        return buf.getvalue()

@@ -6,6 +6,7 @@ A broker class.
 import asyncio
 import azmq
 import logging
+import struct
 
 from azmq.common import AsyncTimeout
 from binascii import hexlify
@@ -92,12 +93,11 @@ class Connection(GenericClient):
         """
         assert domain is not None
 
-        frames = list(domain)
-        frames.append(b'')
-        frames.extend(source_domain or ())
-        frames.append(b'')
-        frames.extend(token or ())
-        frames.append(b'')
+        frames = [
+            domain,
+            source_domain,
+            source_token or b'',
+        ]
         frames.extend(args)
 
         return await self._request(frames)
@@ -113,7 +113,10 @@ class Connection(GenericClient):
 
 class Broker(AsyncObject):
     SERVICE_DOMAIN_PREFIX = b'service'
-    SERVICE_AUTHENTICATION_DOMAIN = (SERVICE_DOMAIN_PREFIX, b'authentication')
+    SERVICE_AUTHENTICATION_DOMAIN = b'%s/%s' % (
+        SERVICE_DOMAIN_PREFIX,
+        b'authentication',
+    )
 
     def __init__(self, *, socket, shared_secret, **kwargs):
         super().__init__(**kwargs)
@@ -234,27 +237,26 @@ class Broker(AsyncObject):
         if command == b'ping':
             return []
 
-        sep_index = frames.index(b'')
-        domain = tuple(frames[:sep_index])
+        domain = frames.pop(0)
         handler = self.__command_handlers.get(command)
 
         if not handler:
             raise CallError(code=400, message="Bad request.")
 
-        return await handler(connection, domain, frames[sep_index + 1:])
+        return await handler(connection, domain, frames)
 
     async def __register_request(self, connection, domain, frames):
-        credentials = tuple(frames)
+        credentials = frames.pop(0)
 
         # Services are authenticated via a shared secret.
-        if domain[0] == self.SERVICE_DOMAIN_PREFIX:
-            if not self.__verify_service_credentials(domain[1], credentials):
+        if domain.startswith(self.SERVICE_DOMAIN_PREFIX):
+            if not self.__verify_service_credentials(domain, credentials):
                 raise CallError(
                     code=401,
                     message="Invalid shared secret.",
                 )
 
-            token = ()
+            token = b''
         else:
             connections = self.__connections_by_domain.get(
                 self.SERVICE_AUTHENTICATION_DOMAIN,
@@ -277,18 +279,18 @@ class Broker(AsyncObject):
             token = await auth_connection.request(
                 domain=self.SERVICE_AUTHENTICATION_DOMAIN,
                 source_domain=domain,
-                source_token=(),
+                source_token=connection.domains.get(domain),
                 args=[
                     b'authenticate',
                 ] + list(credentials),
-            )
+            )[0]
 
         if domain in connection.domains:
             self.__unregister_connection(connection, domain)
 
         self.__register_connection(connection, domain, token)
 
-        return token
+        return [token]
 
     async def __unregister_request(self, connection, domain, frames):
         self.__unregister_connection(connection, domain)
@@ -300,14 +302,13 @@ class Broker(AsyncObject):
                 message="Not registered.",
             )
 
-        sep_index = frames.index(b'')
-        target_domain = tuple(frames[:sep_index])
+        target_domain = frames.pop(0)
         connections = self.__connections_by_domain.get(target_domain)
 
         if not connections:
             raise CallError(
                 code=404,
-                message="No such domain: %r." % (target_domain,),
+                message="No such domain: %s." % target_domain,
             )
 
         target_connection = connections[0]
@@ -317,10 +318,13 @@ class Broker(AsyncObject):
             domain=target_domain,
             source_domain=domain,
             source_token=connection.domains[domain],
-            args=frames[sep_index + 1:],
+            args=frames,
         )
 
     def __verify_service_credentials(self, service_name, credentials):
-        salt, hash = credentials
+        salt_len, = struct.unpack('B', credentials[0:1])
+        salt = credentials[1:salt_len + 1]
+        hash = credentials[salt_len + 1:]
+        identifier = service_name[service_name.index(b'/') + 1:]
 
-        return verify_hash(self.shared_secret, salt, service_name, hash)
+        return verify_hash(self.shared_secret, salt, identifier[:16], hash)

@@ -21,6 +21,8 @@ def generate_hash(shared_secret, salt, identifier):
     """
     Generate a secure hash for shared-secret checking purposes.
     """
+    assert len(identifier) <= 16, "identifier can't exceed 16 bytes"
+
     personal = identifier + b'-' * (16 - len(identifier))
 
     return crypto_generichash_blake2b_salt_personal(

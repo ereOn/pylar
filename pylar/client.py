@@ -240,12 +240,8 @@ class Client(GenericClient, metaclass=ClientMeta):
         :param credentials: The credentials for the domain.
         :returns: The authentication token.
         """
-        frames = [b'register']
-        frames.extend(domain)
-        frames.append(b'')
-        frames.extend(credentials)
-
-        token = tuple(await super()._request(frames))
+        frames = [b'register', domain, credentials]
+        token, = await super()._request(frames)
         logger.info("Client is now registered as %s.", domain)
 
         return token
@@ -254,9 +250,7 @@ class Client(GenericClient, metaclass=ClientMeta):
         """
         Unregister from the broker.
         """
-        frames = [b'unregister']
-        frames.extend(domain)
-        frames.append(b'')
+        frames = [b'unregister', domain]
 
         await super()._request(frames)
 
@@ -271,11 +265,7 @@ class Client(GenericClient, metaclass=ClientMeta):
         :param args: A list of frames to pass.
         :returns: The request result.
         """
-        frames = [b'request']
-        frames.extend(domain)
-        frames.append(b'')
-        frames.extend(target_domain)
-        frames.append(b'')
+        frames = [b'request', domain, target_domain]
         frames.extend(args)
 
         return await super()._request(frames)
@@ -295,10 +285,7 @@ class Client(GenericClient, metaclass=ClientMeta):
         :param frames: The request frames.
         :returns: A list of frames that constitute the reply.
         """
-        sep_index = frames.index(b'')
-        domain = tuple(frames[:sep_index])
-        del frames[:sep_index + 1]
-
+        domain = frames.pop(0)
         registration = self.__client_proxies.get(domain)
 
         if not registration:
@@ -307,11 +294,8 @@ class Client(GenericClient, metaclass=ClientMeta):
                 message="Client not found.",
             )
 
-        sep_index = frames.index(b'')
-        source_domain = tuple(frames[:sep_index])
-        del frames[:sep_index + 1]
-        sep_index = frames.index(b'')
-        source_token = tuple(frames[:sep_index])
+        source_domain = frames.pop(0)
+        source_token = frames.pop(0)
         command = frames.pop(0)
 
         return await registration.on_request(
