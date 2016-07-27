@@ -339,6 +339,9 @@ class Client(GenericClient, metaclass=ClientMeta):
                     self.__ping_timeout,
                 )
 
+                # Flush the outgoing queues.
+                await self.socket.reset_all()
+
                 for client_proxy in self.__client_proxies.values():
                     client_proxy.token = None
 
@@ -348,6 +351,9 @@ class Client(GenericClient, metaclass=ClientMeta):
                     "unregistration.",
                     ex,
                 )
+
+                # Flush the outgoing queues.
+                await self.socket.reset_all()
 
                 for client_proxy in self.__client_proxies.values():
                     client_proxy.token = None
