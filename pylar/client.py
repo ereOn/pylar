@@ -39,8 +39,12 @@ class Client(GenericClient):
         await self.__has_connection.wait()
 
     def register_client_proxy(self, client_proxy):
-        assert client_proxy not in self.__client_proxies
-        assert client_proxy.domain not in self.__client_proxies_by_domain
+        assert client_proxy not in self.__client_proxies, (
+            "This client proxy was already registered."
+        )
+        assert client_proxy.domain not in self.__client_proxies_by_domain, (
+            "A client proxy with the same domain was already registered."
+        )
 
         self.__client_proxies.add(client_proxy)
         self.__client_proxies_by_domain[client_proxy.domain] = client_proxy

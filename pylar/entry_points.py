@@ -125,14 +125,14 @@ def check_shared_secret(shared_secret):
     help="A shared secret in base64 format that the authentication services "
     "use too.",
 )
-@click.argument('endpoints', nargs=-1, metavar='endpoint...')
-def broker(shared_secret, endpoints):
+@click.option('-l', '--listen', nargs=1, metavar='endpoint', multiple=True)
+def broker(shared_secret, listen):
     setup_logging()
 
     shared_secret = check_shared_secret(shared_secret)
 
-    if not endpoints:
-        endpoints = [
+    if not listen:
+        listen = [
             DEFAULT_ENDPOINT,
         ]
 
@@ -140,7 +140,7 @@ def broker(shared_secret, endpoints):
     context = Context(loop=loop)
     socket = context.socket(azmq.ROUTER)
 
-    for endpoint in endpoints:
+    for endpoint in listen:
         socket.bind(endpoint)
 
     broker = Broker(
@@ -149,7 +149,7 @@ def broker(shared_secret, endpoints):
         loop=loop,
     )
 
-    click.echo("Broker started on: %s." % ', '.join(endpoints))
+    click.echo("Broker started on %s." % ', '.join(listen))
 
     with allow_interruption(
         (loop, broker.close),
@@ -179,31 +179,76 @@ def broker(shared_secret, endpoints):
     help="A shared secret in base64 format that the authentication services "
     "use too.",
 )
-@click.argument('name')
-@click.argument('endpoint', default=DEFAULT_ENDPOINT)
-def service(shared_secret, name, endpoint):
+@click.option('-c', '--connect', default=DEFAULT_ENDPOINT)
+@click.argument('names', nargs=-1, metavar='name...')
+def service(shared_secret, connect, names):
     setup_logging()
 
     shared_secret = check_shared_secret(shared_secret)
 
-    service_class = import_service(name)
     loop = set_event_loop()
     context = Context(loop=loop)
     socket = context.socket(azmq.DEALER)
-    socket.connect(endpoint)
+    socket.connect(connect)
 
     client = Client(
         socket=socket,
         loop=loop,
     )
-    service = service_class(
-        client=client,
-        shared_secret=shared_secret,
-        loop=loop,
-    )
-    client.register_client_proxy(service)
 
-    click.echo("Service started connected to: %s." % endpoint)
+    registered_services = []
+
+    for name in names:
+        try:
+            service_class = import_service(name)
+            service = service_class(
+                client=client,
+                shared_secret=shared_secret,
+                loop=loop,
+            )
+
+        except Exception as ex:
+            click.echo(
+                click.style(
+                    "Unable to load service %s. Error was: %s." % (name, ex),
+                    fg="yellow",
+                ),
+                err=True,
+            )
+            continue
+
+        try:
+            client.register_client_proxy(service)
+        except Exception as ex:
+            click.echo(
+                click.style(
+                    "Unable to register service %s. Error was: %s" % (
+                        name,
+                        ex,
+                    ),
+                    fg="yellow",
+                ),
+                err=True,
+            )
+            service.close()
+        else:
+            registered_services.append(name)
+
+
+    if not registered_services:
+        click.echo(
+            click.style(
+                "No services were registered. Giving up.",
+                fg="red",
+            ),
+            err=True,
+        )
+        client.close()
+    else:
+        click.echo("Service(s) %s started and connected to %s." % (
+            ', '.join(registered_services),
+            connect
+        ))
 
     with allow_interruption(
         (loop, client.close),
@@ -222,4 +267,7 @@ def service(shared_secret, name, endpoint):
     context.close()
     loop.run_until_complete(context.wait_closed())
 
-    click.echo("Service stopped.")
+    if registered_services:
+        click.echo("Service stopped.")
+    else:
+        raise SystemExit(1)
