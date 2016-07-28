@@ -23,9 +23,9 @@ async def run():
             try:
                 await client_proxy.wait_registered()
 
-                print(await client_proxy.describe())
+                print(await client_proxy.describe(b'user/bob'))
                 r = await client_proxy.method_call(
-                    domain=(b'user', b'bob'),
+                    target_domain=b'user/bob',
                     method='send_message',
                     args=['hello'],
                 )

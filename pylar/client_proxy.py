@@ -105,19 +105,43 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
     async def wait_unregistered(self):
         await self.__unregistered.wait()
 
-    # TODO: Move.
-    async def describe(self, domain):
-        result = await self._request(
-            domain,
-            (b'service', b'rpc'),
-            [b'describe'],
+    async def request(self, target_domain, command, args=()):
+        await self.wait_registered()
+
+        client_proxy = self.client.get_client_proxy(target_domain)
+
+        # If we have a local client proxy that matches, we don't need to
+        # contact the broker about it and can make the request locally.
+        if client_proxy:
+            return await client_proxy.on_request(
+                source_domain=self.domain,
+                source_token=self.token,
+                command=command,
+                args=args,
+            )
+        else:
+            return await self.client.request(
+                source_domain=self.domain,
+                target_domain=target_domain,
+                command=command,
+                args=args,
+            )
+
+    async def describe(self, target_domain):
+        """
+        Ask a remote service to describe its available methods.
+
+        :param target_domain: The target domain of the remote service.
+        """
+        result = await self.request(
+            target_domain=target_domain,
+            command=b'describe',
         )
+
         return deserialize(result[0])
 
-    # TODO: Move.
     async def method_call(
         self,
-        domain,
         target_domain,
         method,
         args=None,
@@ -133,14 +157,16 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
         :param kwargs: A list of named arguments to pass.
         :returns: The method call results.
         """
-        frames = [
-            b'method_call',
-            method.encode('utf-8'),
-            serialize(list(args) or []),
-            serialize(dict(kwargs or {})),
-        ]
+        result = await self.request(
+            target_domain=target_domain,
+            command=b'method_call',
+            args=[
+                method.encode('utf-8'),
+                serialize(list(args) or []),
+                serialize(dict(kwargs or {})),
+            ],
+        )
 
-        result = await self._request(domain, target_domain, frames)
         return deserialize(result[0])
 
     async def on_request(

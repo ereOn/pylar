@@ -70,6 +70,30 @@ class Client(GenericClient):
             if client_proxy.registered
         ]
 
+    def get_client_proxy(self, domain):
+        """
+        Get an active client proxy with the specified domain.
+
+        :param domain: The domain.
+        :returns: The client proxy, or `None` if no such client proxy is found.
+        """
+        return self.__client_proxies_by_domain.get(domain)
+
+    async def request(self, source_domain, target_domain, command, args=()):
+        """
+        Send a generic request to a specified domain.
+
+        :param source domain: The source domain.
+        :param target_domain: The target domain.
+        :param command: The command.
+        :param args: A list of frames to pass.
+        :returns: The request result.
+        """
+        frames = [b'request', domain, target_domain, command]
+        frames.extend(args)
+
+        return await self._request(frames)
+
     # Protected methods.
 
     async def _read(self):
@@ -101,7 +125,7 @@ class Client(GenericClient):
         :returns: The authentication token.
         """
         frames = [b'register', domain, credentials]
-        token, = await super()._request(frames)
+        token, = await self._request(frames)
 
         return token
 
@@ -111,27 +135,13 @@ class Client(GenericClient):
         """
         frames = [b'unregister', domain]
 
-        await super()._request(frames)
-
-    async def _request(self, domain, target_domain, args):
-        """
-        Send a generic request to a specified domain.
-
-        :param domain: The domain.
-        :param target_domain: The target domain.
-        :param args: A list of frames to pass.
-        :returns: The request result.
-        """
-        frames = [b'request', domain, target_domain]
-        frames.extend(args)
-
-        return await super()._request(frames)
+        await self._request(frames)
 
     async def _ping(self):
         """
         Ping the broker.
         """
-        remote_uid, = await super()._request([b'ping'])
+        remote_uid, = await self._request([b'ping'])
 
         return remote_uid
 
