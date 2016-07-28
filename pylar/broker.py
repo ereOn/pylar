@@ -12,6 +12,7 @@ from azmq.common import AsyncTimeout
 from binascii import hexlify
 from collections import deque
 from functools import partial
+from uuid import uuid4
 
 from .async_object import AsyncObject
 from .errors import CallError
@@ -27,6 +28,7 @@ class Connection(GenericClient):
         super().__init__(**kwargs)
         self.socket = socket
         self.identity = identity
+        self.uid = uuid4().bytes
 
         self.__on_request_cb = on_request_cb
 
@@ -235,7 +237,7 @@ class Broker(AsyncObject):
         command = frames.pop(0)
 
         if command == b'ping':
-            return []
+            return [connection.uid]
 
         domain = frames.pop(0)
         handler = self.__command_handlers.get(command)

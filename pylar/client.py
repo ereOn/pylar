@@ -164,6 +164,7 @@ class Client(GenericClient, metaclass=ClientMeta):
         self.__ping_interval = 5.0
         self.__has_registrations = asyncio.Event(loop=self.loop)
         self.__client_proxies = {}
+        self.__remote_uid = None
         self.add_task(self.__ping_loop())
 
     def add_registration(self, domain, credentials):
@@ -324,12 +325,23 @@ class Client(GenericClient, metaclass=ClientMeta):
         """
         logger.warning("Received unhandled notification of type %s.", type_)
 
+    async def __reset(self):
+        # Flush the outgoing queues.
+        await self.socket.reset_all()
+        self.__remote_uid = None
+
+        for client_proxy in self.__client_proxies.values():
+            client_proxy.token = None
+
     async def __ping_loop(self):
         while not self.closing:
             await self.__has_registrations.wait()
 
             try:
-                await asyncio.wait_for(self._ping(), self.__ping_timeout)
+                remote_uid = await asyncio.wait_for(
+                    self._ping(),
+                    self.__ping_timeout,
+                )
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError:
@@ -339,11 +351,7 @@ class Client(GenericClient, metaclass=ClientMeta):
                     self.__ping_timeout,
                 )
 
-                # Flush the outgoing queues.
-                await self.socket.reset_all()
-
-                for client_proxy in self.__client_proxies.values():
-                    client_proxy.token = None
+                await self.__reset()
 
             except Exception as ex:
                 logger.error(
@@ -352,10 +360,15 @@ class Client(GenericClient, metaclass=ClientMeta):
                     ex,
                 )
 
-                # Flush the outgoing queues.
-                await self.socket.reset_all()
-
-                for client_proxy in self.__client_proxies.values():
-                    client_proxy.token = None
+                await self.__reset()
+            else:
+                if self.__remote_uid is None:
+                    self.__remote_uid = remote_uid
+                elif self.__remote_uid != remote_uid:
+                    logger.warning(
+                        "Broker unique identifier changed ! Performing "
+                        "implicit unregistration.",
+                    )
+                    await self.__reset()
 
             await asyncio.sleep(self.__ping_interval, loop=self.loop)
