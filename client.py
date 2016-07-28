@@ -3,7 +3,7 @@ import azmq
 
 from pylar.entry_points import set_event_loop
 from pylar.client import Client
-from pylar.client_proxy import ClientProxy
+from pylar.rpc_client_proxy import RPCClientProxy
 
 
 async def run():
@@ -13,7 +13,7 @@ async def run():
             client = Client(
                 socket=socket,
             )
-            client_proxy = ClientProxy(
+            client_proxy = RPCClientProxy(
                 client=client,
                 domain=b'user/bob',
                 credentials=b'password',
@@ -23,11 +23,11 @@ async def run():
             try:
                 await client_proxy.wait_registered()
 
-                print(await client_proxy.describe(b'user/bob'))
+                print(await client_proxy.describe(b'service/arithmetic'))
                 r = await client_proxy.method_call(
-                    target_domain=b'user/bob',
-                    method='send_message',
-                    args=['hello'],
+                    target_domain=b'service/arithmetic',
+                    method='sum',
+                    args=[40, 2],
                 )
                 print(r)
             finally:

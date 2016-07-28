@@ -7,10 +7,6 @@ import asyncio
 from math import ceil
 
 from .async_object import AsyncObject
-from .common import (
-    deserialize,
-    serialize,
-)
 from .errors import CallError
 from .log import logger as main_logger
 
@@ -21,7 +17,12 @@ logger = main_logger.getChild('client_proxy')
 
 class ClientProxyMeta(type):
     def __new__(cls, name, bases, attrs):
-        command_handlers = attrs.setdefault('_command_handlers', {})
+        command_handlers = {}
+
+        for base in bases:
+            command_handlers.update(getattr(base, '_command_handlers', {}))
+
+        attrs.setdefault('_command_handlers', command_handlers)
 
         for field in attrs.values():
             command_name = getattr(field, '_pylar_command_name', None)
@@ -29,7 +30,7 @@ class ClientProxyMeta(type):
             if command_name is not None:
                 command_handlers[command_name] = field
 
-        return type.__new__(cls, name, bases, attrs)
+        return super().__new__(cls, name, bases, attrs)
 
 
 class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
@@ -126,48 +127,6 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
                 command=command,
                 args=args,
             )
-
-    async def describe(self, target_domain):
-        """
-        Ask a remote service to describe its available methods.
-
-        :param target_domain: The target domain of the remote service.
-        """
-        result = await self.request(
-            target_domain=target_domain,
-            command=b'describe',
-        )
-
-        return deserialize(result[0])
-
-    async def method_call(
-        self,
-        target_domain,
-        method,
-        args=None,
-        kwargs=None,
-    ):
-        """
-        Remote call to a specified domain.
-
-        :param domain: The domain.
-        :param target_domain: The target domain.
-        :param method: The method to call.
-        :param args: A list of arguments to pass.
-        :param kwargs: A list of named arguments to pass.
-        :returns: The method call results.
-        """
-        result = await self.request(
-            target_domain=target_domain,
-            command=b'method_call',
-            args=[
-                method.encode('utf-8'),
-                serialize(list(args) or []),
-                serialize(dict(kwargs or {})),
-            ],
-        )
-
-        return deserialize(result[0])
 
     async def on_request(
         self,

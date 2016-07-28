@@ -45,6 +45,7 @@ Pylar is an experiment on micro-services.
         'pylar_services': [
             'authentication = '
             'pylar.authentication_service:AuthenticationService',
+            'arithmetic = pylar.arithmetic_service:ArithmeticService',
         ],
     },
 )

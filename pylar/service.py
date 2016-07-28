@@ -2,7 +2,6 @@
 A service class.
 """
 
-import asyncio
 import struct
 
 from io import BytesIO

@@ -93,7 +93,7 @@ class Client(GenericClient):
         :param args: A list of frames to pass.
         :returns: The request result.
         """
-        frames = [b'request', domain, target_domain, command]
+        frames = [b'request', source_domain, target_domain, command]
         frames.extend(args)
 
         return await self._request(frames)
