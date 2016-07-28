@@ -278,14 +278,15 @@ class Broker(AsyncObject):
             auth_connection = connections[0]
             connections.rotate(-1)
 
-            token = await auth_connection.request(
+            token, = await auth_connection.request(
                 domain=self.SERVICE_AUTHENTICATION_DOMAIN,
                 source_domain=domain,
                 source_token=connection.domains.get(domain),
                 args=[
                     b'authenticate',
-                ] + list(credentials),
-            )[0]
+                    credentials,
+                ],
+            )
 
         if domain in connection.domains:
             self.__unregister_connection(connection, domain)

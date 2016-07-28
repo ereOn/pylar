@@ -16,6 +16,7 @@ from base64 import b64decode
 from contextlib import contextmanager
 
 from .broker import Broker
+from .client import Client
 
 
 def setup_logging():
@@ -183,19 +184,24 @@ def service(shared_secret, dotted_name, endpoint):
     socket = context.socket(azmq.DEALER)
     socket.connect(endpoint)
 
-    service = service_class(
+    client = Client(
         socket=socket,
+        loop=loop,
+    )
+    service = service_class(
+        client=client,
         shared_secret=shared_secret,
         loop=loop,
     )
+    client.register_client_proxy(service)
 
     click.echo("Service started connected to: %s." % endpoint)
 
     with allow_interruption(
-        (loop, service.close),
+        (loop, client.close),
     ):
         try:
-            loop.run_until_complete(service.wait_closed())
+            loop.run_until_complete(client.wait_closed())
         except Exception as ex:
             click.echo(
                 click.style(

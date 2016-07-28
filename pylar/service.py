@@ -7,7 +7,7 @@ import struct
 
 from io import BytesIO
 
-from .client import Client
+from .client_proxy import ClientProxy
 from .log import logger as main_logger
 from .security import (
     generate_hash,
@@ -17,25 +17,18 @@ from .security import (
 logger = main_logger.getChild('service')
 
 
-class Service(Client):
-    def __init__(self, shared_secret, name=None, **kwargs):
-        if name is not None:
-            self.name = name
-
-        # If no name was specified, we assume there is one defined at the class
-        # level.
-        assert self.name, "No service name was specified."
-
-        self.shared_secret = shared_secret
-
-        super().__init__(**kwargs)
-        self.add_registration(
-            domain=b'service/%s' % self.name.encode('utf-8'),
+class Service(ClientProxy):
+    def __init__(self, *, shared_secret, name, **kwargs):
+        super().__init__(
+            domain=b'service/%s' % name.encode('utf-8'),
             credentials=self.get_credentials(
-                self.name.encode('utf-8'),
-                self.shared_secret,
+                name.encode('utf-8'),
+                shared_secret,
             ),
+            **kwargs
         )
+        self.name = name
+        self.shared_secret = shared_secret
 
     @staticmethod
     def get_credentials(name, shared_secret):

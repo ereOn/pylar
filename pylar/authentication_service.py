@@ -10,15 +10,20 @@ logger = main_logger.getChild('authentication_service')
 
 
 class AuthenticationService(Service):
-    name = 'authentication'
-
     USER_DOMAIN_PREFIX = b'user'
 
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(
+            name='authentication',
+            **kwargs
+        )
         self._users = {}
         # TODO: Remove this.
         self.add_user('bob', 'password')
+
+    @classmethod
+    def get_user_domain(cls, username):
+        return b'/'.join([cls.USER_DOMAIN_PREFIX, username.encode('utf-8')])
 
     def add_user(self, username, password):
         """
@@ -27,7 +32,7 @@ class AuthenticationService(Service):
         :param username: The username.
         :param password: The password.
         """
-        domain = (self.USER_DOMAIN_PREFIX, username.encode('utf-8'))
+        domain = self.get_user_domain(username)
         self._users[domain] = password.encode('utf-8')
 
     def remove_user(self, username):
@@ -36,14 +41,14 @@ class AuthenticationService(Service):
 
         :param username: The username.
         """
-        domain = (self.USER_DOMAIN_PREFIX, username.encode('utf-8'))
+        domain = self.get_user_domain(username)
         self._users.pop(domain)
 
     @Service.command('authenticate')
-    async def _authenticate(self, domain, source_domain, source_token, args):
+    async def authenticate(self, source_domain, source_token, args):
         logger.debug("Received authentication request for: %s", source_domain)
         password, = args
-        ref_password = self._users.get(domain)
+        ref_password = self._users.get(source_domain)
 
         if not ref_password:
             logger.warning(
@@ -64,3 +69,5 @@ class AuthenticationService(Service):
                 code=401,
                 message="Invalid password.",
             )
+
+        return [b'']

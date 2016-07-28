@@ -3,6 +3,7 @@ import azmq
 
 from pylar.entry_points import set_event_loop
 from pylar.client import Client
+from pylar.client_proxy import ClientProxy
 
 
 async def run():
@@ -11,15 +12,19 @@ async def run():
             socket.connect('tcp://127.0.0.1:3333')
             client = Client(
                 socket=socket,
-                domain=(b'user', b'bob',),
-                credentials=(b'password',),
             )
+            client_proxy = ClientProxy(
+                client=client,
+                domain=b'user/bob',
+                credentials=b'password',
+            )
+            client.register_client_proxy(client_proxy)
 
             try:
-                await client.wait_registered()
+                await client_proxy.wait_registered()
 
-                print(await client.describe())
-                r = await client.method_call(
+                print(await client_proxy.describe())
+                r = await client_proxy.method_call(
                     domain=(b'user', b'bob'),
                     method='send_message',
                     args=['hello'],

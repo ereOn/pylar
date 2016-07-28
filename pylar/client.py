@@ -6,179 +6,15 @@ import asyncio
 
 from math import ceil
 
-from .common import (
-    deserialize,
-    serialize,
-)
+from .client_proxy import ClientProxy
 from .errors import CallError
 from .generic_client import GenericClient
 from .log import logger as main_logger
 
-from pyslot import Signal
-
 logger = main_logger.getChild('client')
 
 
-class ClientMeta(type):
-    def __new__(cls, name, bases, attrs):
-        command_handlers = attrs.setdefault('_command_handlers', {})
-
-        for field in attrs.values():
-            command_name = getattr(field, '_pylar_command_name', None)
-
-            if command_name is not None:
-                command_handlers[command_name] = field
-
-        return type.__new__(cls, name, bases, attrs)
-
-
-class ClientProxy(object):
-    def __init__(self, client, domain, credentials):
-        self.client = client
-        self.domain = domain
-        self.credentials = credentials
-        self.task = self.client.add_task(self.__register_loop()),
-
-        # Exposed signals.
-        self.on_registered = Signal()
-        self.on_unregistered = Signal()
-
-        self.__registration_timeout = 5.0
-        self.__registered = asyncio.Event(loop=client.loop)
-        self.__unregistered = asyncio.Event(loop=client.loop)
-
-        self.__token = None
-        self.token = None
-
-    @property
-    def token(self):
-        return self.__token
-
-    @token.setter
-    def token(self, value):
-        if value is None:
-            self.__unregistered.set()
-            self.__registered.clear()
-
-            if self.__token is not None:
-                logger.info(
-                    "Client is no longer registered as %s.",
-                    self.domain,
-                )
-                self.on_unregistered.emit(self)
-        else:
-            self.__unregistered.clear()
-            self.__registered.set()
-
-            if self.__token is None:
-                logger.info("Client is now registered as %s.", self.domain)
-                self.on_registered.emit(self)
-
-        self.__token = value
-
-    @property
-    def registered(self):
-        return self.__registered.is_set()
-
-    @property
-    def unregistered(self):
-        return self.__unregistered.is_set()
-
-    async def wait_registered(self):
-        await self.__registered.wait()
-
-    async def wait_unregistered(self):
-        await self.__unregistered.wait()
-
-    async def on_request(
-        self,
-        source_domain,
-        source_token,
-        command,
-        args,
-    ):
-        """
-        Called whenever a request is received.
-
-        :param source_domain: The caller's domain.
-        :param source_token: The caller's token.
-        :param command: The command.
-        :param args: The additional frames.
-        :returns: The result.
-        """
-        command_handler = self._command_handlers.get(command)
-
-        if not command_handler:
-            raise CallError(
-                code=404,
-                message="Unknown command.",
-            )
-
-        return await command_handler(
-            self,
-            domain,
-            source_domain,
-            source_token,
-            args,
-        )
-
-    async def __register_loop(self):
-        min_delay = 1
-        max_delay = 60
-        factor = 1.5
-        delay = 1
-
-        while not self.client.closing:
-            await self.wait_unregistered()
-            await self.client.wait_connection()
-
-            try:
-                logger.debug("Registration for %s in progress...", self.domain)
-                self.token = await asyncio.wait_for(
-                    self.client._register(
-                        domain=self.domain,
-                        credentials=self.credentials,
-                    ),
-                    self.__registration_timeout,
-                )
-            except asyncio.CancelledError:
-                raise
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "Registration did not complete within %s second(s). "
-                    "Retrying in %s second(s).",
-                    self.__registration_timeout,
-                    delay,
-                )
-                await asyncio.sleep(delay, loop=self.client.loop)
-                delay = min(ceil(delay * factor), max_delay)
-            except Exception as ex:
-                logger.error(
-                    "Registration failed (%s): retrying in %s second(s).",
-                    ex,
-                    delay,
-                )
-                await asyncio.sleep(delay, loop=self.client.loop)
-                delay = min(ceil(delay * factor), max_delay)
-            else:
-                delay = min_delay
-
-
-class Client(GenericClient, metaclass=ClientMeta):
-    @staticmethod
-    def command(name=None):
-        """
-        Register a method as a command handler.
-
-        :param name: The name of the command to register.
-        """
-        def decorator(func):
-            func._pylar_command_name = (name or func.__name__).encode('utf-8')
-
-            return func
-
-        return decorator
-
+class Client(GenericClient):
     def __init__(self, *, socket, **kwargs):
         super().__init__(**kwargs)
         self.socket = socket
@@ -189,22 +25,11 @@ class Client(GenericClient, metaclass=ClientMeta):
         self.__ping_timeout = 5.0
         self.__ping_interval = 5.0
         self.__has_connection = asyncio.Event(loop=self.loop)
-        self.__has_registrations = asyncio.Event(loop=self.loop)
-        self.__client_proxies = {}
+        self.__has_client_proxies = asyncio.Event(loop=self.loop)
+        self.__client_proxies = set()
+        self.__client_proxies_by_domain = {}
         self.__remote_uid = None
         self.add_task(self.__ping_loop())
-
-    def add_registration(self, domain, credentials):
-        assert domain not in self.__client_proxies
-
-        self.__client_proxies[domain] = registration = ClientProxy(
-            client=self,
-            domain=domain,
-            credentials=credentials,
-        )
-        self.__has_registrations.set()
-
-        return registration
 
     @property
     def has_connection(self):
@@ -213,48 +38,37 @@ class Client(GenericClient, metaclass=ClientMeta):
     async def wait_connection(self):
         await self.__has_connection.wait()
 
-    @property
-    def registrations(self):
-        return list(self.__client_proxies.values())
+    def register_client_proxy(self, client_proxy):
+        assert client_proxy not in self.__client_proxies
+        assert client_proxy.domain not in self.__client_proxies_by_domain
+
+        self.__client_proxies.add(client_proxy)
+        self.__client_proxies_by_domain[client_proxy.domain] = client_proxy
+        self.__has_client_proxies.set()
+        self.add_cleanup(client_proxy.close)
+        self.add_cleanup(client_proxy.wait_closed)
+
+    def unregister_client_proxy(self, client_proxy):
+        assert client_proxy in self.__client_proxies
+
+        self.__client_proxies.remove(client_proxy)
+        self.__client_proxies_by_domain.remove(client_proxy.domain)
+
+        if not self.__client_proxies:
+            self.__has_client_proxies.clear()
+
+        client_proxy.close()
 
     @property
-    def active_registrations(self):
+    def client_proxies(self):
+        return list(self.__client_proxies)
+
+    @property
+    def active_client_proxies(self):
         return [
-            client_proxy for client_proxy in self.registrations
+            client_proxy for client_proxy in self.client_proxies
             if client_proxy.registered
         ]
-
-    async def describe(self, domain):
-        result = await self._request(domain, (b'service', b'rpc'), [b'describe'])
-        return deserialize(result[0])
-
-    async def method_call(
-        self,
-        domain,
-        target_domain,
-        method,
-        args=None,
-        kwargs=None,
-    ):
-        """
-        Remote call to a specified domain.
-
-        :param domain: The domain.
-        :param target_domain: The target domain.
-        :param method: The method to call.
-        :param args: A list of arguments to pass.
-        :param kwargs: A list of named arguments to pass.
-        :returns: The method call results.
-        """
-        frames = [
-            b'method_call',
-            method.encode('utf-8'),
-            serialize(list(args) or []),
-            serialize(dict(kwargs or {})),
-        ]
-
-        result = await self._request(domain, target_domain, frames)
-        return deserialize(result[0])
 
     # Protected methods.
 
@@ -329,9 +143,9 @@ class Client(GenericClient, metaclass=ClientMeta):
         :returns: A list of frames that constitute the reply.
         """
         domain = frames.pop(0)
-        registration = self.__client_proxies.get(domain)
+        client_proxy = self.__client_proxies_by_domain.get(domain)
 
-        if not registration:
+        if not client_proxy:
             raise CallError(
                 code=404,
                 message="Client not found.",
@@ -341,7 +155,7 @@ class Client(GenericClient, metaclass=ClientMeta):
         source_token = frames.pop(0)
         command = frames.pop(0)
 
-        return await registration.on_request(
+        return await client_proxy.on_request(
             source_domain,
             source_token,
             command,
@@ -372,14 +186,14 @@ class Client(GenericClient, metaclass=ClientMeta):
         self.__has_connection.clear()
         self.__remote_uid = None
 
-        for client_proxy in self.registrations:
+        for client_proxy in self.client_proxies:
             client_proxy.token = None
 
         await self.socket.reset_all()
 
     async def __ping_loop(self):
         while not self.closing:
-            await self.__has_registrations.wait()
+            await self.__has_client_proxies.wait()
 
             try:
                 remote_uid = await asyncio.wait_for(
@@ -389,7 +203,7 @@ class Client(GenericClient, metaclass=ClientMeta):
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError:
-                if self.active_registrations:
+                if self.active_client_proxies:
                     logger.warning(
                         "Broker did not reply in %s second(s). Performing "
                         "implicit unregistration.",
@@ -399,7 +213,7 @@ class Client(GenericClient, metaclass=ClientMeta):
                 await self.__reset()
 
             except Exception as ex:
-                if self.active_registrations:
+                if self.active_client_proxies:
                     logger.error(
                         "Ping request failed (%s). Performing implicit "
                         "unregistration.",
