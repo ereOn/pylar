@@ -6,6 +6,7 @@ import asyncio
 import azmq
 import chromalog
 import click
+import entrypoints
 import logging
 import signal
 import sys
@@ -94,6 +95,13 @@ def import_class(dotted_name):
     return getattr(module, class_name)
 
 
+def import_service(name):
+    if '.' in name:
+        return import_class(name)
+    else:
+        return entrypoints.get_single('pylar_services', name).load()
+
+
 def check_shared_secret(shared_secret):
     if shared_secret is None:
         click.echo(
@@ -171,14 +179,14 @@ def broker(shared_secret, endpoints):
     help="A shared secret in base64 format that the authentication services "
     "use too.",
 )
-@click.argument('dotted_name')
+@click.argument('name')
 @click.argument('endpoint', default=DEFAULT_ENDPOINT)
-def service(shared_secret, dotted_name, endpoint):
+def service(shared_secret, name, endpoint):
     setup_logging()
 
     shared_secret = check_shared_secret(shared_secret)
 
-    service_class = import_class(dotted_name)
+    service_class = import_service(name)
     loop = set_event_loop()
     context = Context(loop=loop)
     socket = context.socket(azmq.DEALER)
