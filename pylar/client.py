@@ -5,7 +5,6 @@ A client class.
 import asyncio
 
 from math import ceil
-from time import perf_counter
 
 from .common import (
     deserialize,
@@ -14,6 +13,8 @@ from .common import (
 from .errors import CallError
 from .generic_client import GenericClient
 from .log import logger as main_logger
+
+from pyslot import Signal
 
 logger = main_logger.getChild('client')
 
@@ -38,10 +39,15 @@ class ClientProxy(object):
         self.credentials = credentials
         self.task = self.client.add_task(self.__register_loop()),
 
+        # Exposed signals.
+        self.on_registered = Signal()
+        self.on_unregistered = Signal()
+
         self.__registration_timeout = 5.0
         self.__registered = asyncio.Event(loop=client.loop)
         self.__unregistered = asyncio.Event(loop=client.loop)
 
+        self.__token = None
         self.token = None
 
     @property
@@ -50,14 +56,33 @@ class ClientProxy(object):
 
     @token.setter
     def token(self, value):
-        self.__token = value
-
         if value is None:
             self.__unregistered.set()
             self.__registered.clear()
+
+            if self.__token is not None:
+                logger.info(
+                    "Client is no longer registered as %s.",
+                    self.domain,
+                )
+                self.on_unregistered.emit(self)
         else:
             self.__unregistered.clear()
             self.__registered.set()
+
+            if self.__token is None:
+                logger.info("Client is now registered as %s.", self.domain)
+                self.on_registered.emit(self)
+
+        self.__token = value
+
+    @property
+    def registered(self):
+        return self.__registered.is_set()
+
+    @property
+    def unregistered(self):
+        return self.__unregistered.is_set()
 
     async def wait_registered(self):
         await self.__registered.wait()
@@ -105,6 +130,7 @@ class ClientProxy(object):
 
         while not self.client.closing:
             await self.wait_unregistered()
+            await self.client.wait_connection()
 
             try:
                 logger.debug("Registration for %s in progress...", self.domain)
@@ -162,6 +188,7 @@ class Client(GenericClient, metaclass=ClientMeta):
         self._unregistered.set()
         self.__ping_timeout = 5.0
         self.__ping_interval = 5.0
+        self.__has_connection = asyncio.Event(loop=self.loop)
         self.__has_registrations = asyncio.Event(loop=self.loop)
         self.__client_proxies = {}
         self.__remote_uid = None
@@ -178,6 +205,24 @@ class Client(GenericClient, metaclass=ClientMeta):
         self.__has_registrations.set()
 
         return registration
+
+    @property
+    def has_connection(self):
+        return self.__has_connection.is_set()
+
+    async def wait_connection(self):
+        await self.__has_connection.wait()
+
+    @property
+    def registrations(self):
+        return list(self.__client_proxies.values())
+
+    @property
+    def active_registrations(self):
+        return [
+            client_proxy for client_proxy in self.registrations
+            if client_proxy.registered
+        ]
 
     async def describe(self, domain):
         result = await self._request(domain, (b'service', b'rpc'), [b'describe'])
@@ -243,7 +288,6 @@ class Client(GenericClient, metaclass=ClientMeta):
         """
         frames = [b'register', domain, credentials]
         token, = await super()._request(frames)
-        logger.info("Client is now registered as %s.", domain)
 
         return token
 
@@ -254,8 +298,6 @@ class Client(GenericClient, metaclass=ClientMeta):
         frames = [b'unregister', domain]
 
         await super()._request(frames)
-
-        logger.info("Client is no longer registered as %s.", domain)
 
     async def _request(self, domain, target_domain, args):
         """
@@ -275,9 +317,9 @@ class Client(GenericClient, metaclass=ClientMeta):
         """
         Ping the broker.
         """
-        before = perf_counter()
-        await super()._request([b'ping'])
-        return perf_counter() - before
+        remote_uid, = await super()._request([b'ping'])
+
+        return remote_uid
 
     async def _on_request(self, frames):
         """
@@ -327,11 +369,13 @@ class Client(GenericClient, metaclass=ClientMeta):
 
     async def __reset(self):
         # Flush the outgoing queues.
-        await self.socket.reset_all()
+        self.__has_connection.clear()
         self.__remote_uid = None
 
-        for client_proxy in self.__client_proxies.values():
+        for client_proxy in self.registrations:
             client_proxy.token = None
+
+        await self.socket.reset_all()
 
     async def __ping_loop(self):
         while not self.closing:
@@ -345,20 +389,22 @@ class Client(GenericClient, metaclass=ClientMeta):
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError:
-                logger.warning(
-                    "Broker did not reply in %s second(s). Performing "
-                    "implicit unregistration.",
-                    self.__ping_timeout,
-                )
+                if self.active_registrations:
+                    logger.warning(
+                        "Broker did not reply in %s second(s). Performing "
+                        "implicit unregistration.",
+                        self.__ping_timeout,
+                    )
 
                 await self.__reset()
 
             except Exception as ex:
-                logger.error(
-                    "Ping request failed (%s). Performing implicit "
-                    "unregistration.",
-                    ex,
-                )
+                if self.active_registrations:
+                    logger.error(
+                        "Ping request failed (%s). Performing implicit "
+                        "unregistration.",
+                        ex,
+                    )
 
                 await self.__reset()
             else:
@@ -370,5 +416,10 @@ class Client(GenericClient, metaclass=ClientMeta):
                         "implicit unregistration.",
                     )
                     await self.__reset()
+
+                    # Let's not sleep when we know the connection is alive.
+                    continue
+
+                self.__has_connection.set()
 
             await asyncio.sleep(self.__ping_interval, loop=self.loop)

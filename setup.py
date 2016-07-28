@@ -25,6 +25,7 @@ Pylar is an experiment on micro-services.
         'chromalog>=1.0.5,<2',
         'click>=6.6,<7',
         'csodium>=0.0.2',
+        'pyslot>=2.0.1,<3',
     ],
     test_suite='tests',
     classifiers=[
