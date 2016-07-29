@@ -17,7 +17,20 @@ from .service import Service
 logger = main_logger.getChild('rpc_service')
 
 
+class MethodAttributes(dict):
+    def __init__(self, **kwargs):
+        kwargs.setdefault('use_context', False)
+        super().__init__(**kwargs)
+
+
 class RPCServiceMeta(ClientProxyMeta):
+    EXPOSED_METHODS_DECORATED = 'decorated'
+    EXPOSED_METHODS_PUBLIC = 'public'
+    EXPOSED_METHODS_VALUES = (
+        EXPOSED_METHODS_DECORATED,
+        EXPOSED_METHODS_PUBLIC,
+    )
+
     def __new__(cls, name, bases, attrs):
         methods = {}
 
@@ -26,8 +39,27 @@ class RPCServiceMeta(ClientProxyMeta):
 
         attrs.setdefault('_methods', methods)
 
+        exposed_methods = attrs.get(
+            'exposed_methods',
+            cls.EXPOSED_METHODS_DECORATED,
+        )
+
+        assert exposed_methods in cls.EXPOSED_METHODS_VALUES, (
+            "Unknown `exposed_methods` attribute value %r. Must be one of "
+            "%s" % (
+                exposed_methods,
+                ', '.join(map(repr, cls.EXPOSED_METHODS_VALUES)),
+            )
+        )
+
         for name, field in attrs.items():
             method_attrs = getattr(field, '_pylar_method_attrs', None)
+
+            if method_attrs is None and \
+                exposed_methods == cls.EXPOSED_METHODS_PUBLIC and \
+                not name.startswith('_') and \
+                callable(field):
+                    method_attrs = MethodAttributes()
 
             if method_attrs is not None:
                 methods[name] = method_attrs
@@ -45,7 +77,7 @@ class RPCService(Service, metaclass=RPCServiceMeta):
             method expects a context as its first unnamed parameter.
         """
         def decorator(func):
-            func._pylar_method_attrs = dict(
+            func._pylar_method_attrs = MethodAttributes(
                 use_context=use_context,
             )
 
