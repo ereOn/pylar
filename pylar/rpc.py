@@ -49,13 +49,17 @@ def deserialize_parameter(parametersig):
     )
 
 
-def serialize_function(func):
+def serialize_function(func, use_context):
     sig = signature(func)
 
     return {
         'parameters': [
             serialize_parameter(parameter)
-            for parameter in islice(sig.parameters.values(), 3, None)
+            for parameter in islice(
+                sig.parameters.values(),
+                int(use_context),
+                None,
+            )
         ],
     }
 

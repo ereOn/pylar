@@ -15,6 +15,6 @@ class ArithmeticService(RPCService):
             **kwargs
         )
 
-    @RPCService.method('sum')
-    async def sum(self, source_domain, source_token, *values):
+    @RPCService.method()
+    async def sum(self, *values):
         return sum(values)

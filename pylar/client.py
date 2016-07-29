@@ -93,7 +93,12 @@ class Client(GenericClient):
         :param args: A list of frames to pass.
         :returns: The request result.
         """
-        frames = [b'request', source_domain, target_domain, command]
+        frames = [
+            b'request',
+            source_domain,
+            target_domain,
+            command.encode('utf-8'),
+        ]
         frames.extend(args)
 
         return await self._request(frames)
@@ -172,7 +177,7 @@ class Client(GenericClient):
         return await client_proxy.on_request(
             source_domain,
             source_token,
-            command,
+            command.decode('utf-8'),
             frames,
         )
 

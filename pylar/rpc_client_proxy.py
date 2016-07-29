@@ -21,7 +21,7 @@ class RPCClientProxy(ClientProxy):
         """
         result = await self.request(
             target_domain=target_domain,
-            command=b'describe',
+            command='describe',
         )
 
         return deserialize(result[0])
@@ -45,7 +45,7 @@ class RPCClientProxy(ClientProxy):
         """
         result = await self.request(
             target_domain=target_domain,
-            command=b'method_call',
+            command='method_call',
             args=[
                 method.encode('utf-8'),
                 serialize(list(args) or []),

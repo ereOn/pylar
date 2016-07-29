@@ -7,6 +7,7 @@ import asyncio
 from math import ceil
 
 from .async_object import AsyncObject
+from .client_context import ClientContext
 from .errors import CallError
 from .log import logger as main_logger
 
@@ -17,32 +18,35 @@ logger = main_logger.getChild('client_proxy')
 
 class ClientProxyMeta(type):
     def __new__(cls, name, bases, attrs):
-        command_handlers = {}
+        commands = {}
 
         for base in bases:
-            command_handlers.update(getattr(base, '_command_handlers', {}))
+            commands.update(getattr(base, '_commands', {}))
 
-        attrs.setdefault('_command_handlers', command_handlers)
+        attrs.setdefault('_commands', commands)
 
-        for field in attrs.values():
-            command_name = getattr(field, '_pylar_command_name', None)
+        for name, field in attrs.items():
+            command_attrs = getattr(field, '_pylar_command_attrs', None)
 
-            if command_name is not None:
-                command_handlers[command_name] = field
+            if command_attrs is not None:
+                commands[name] = command_attrs
 
         return super().__new__(cls, name, bases, attrs)
 
 
 class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
     @staticmethod
-    def command(name=None):
+    def command(use_context=False):
         """
         Register a method as a command handler.
 
-        :param name: The name of the command to register.
+        :param use_context: A boolean flag that indicates whether the specified
+            command expects a context as its first unnamed parameter.
         """
         def decorator(func):
-            func._pylar_command_name = (name or func.__name__).encode('utf-8')
+            func._pylar_command_attrs = dict(
+                use_context=use_context,
+            )
 
             return func
 
@@ -72,25 +76,30 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
 
     @token.setter
     def token(self, value):
+        was_registered = self.registered
+        self.__token = value
+
         if value is None:
             self.__unregistered.set()
             self.__registered.clear()
 
-            if self.__token is not None:
+            if was_registered:
                 logger.info(
                     "Client is no longer registered as %s.",
-                    self.domain,
+                    self.context,
                 )
                 self.on_unregistered.emit(self)
         else:
             self.__unregistered.clear()
             self.__registered.set()
 
-            if self.__token is None:
-                logger.info("Client is now registered as %s.", self.domain)
+            if not was_registered:
+                logger.info("Client is now registered as %s.", self.context)
                 self.on_registered.emit(self)
 
-        self.__token = value
+    @property
+    def context(self):
+        return ClientContext(domain=self.domain, token=self.token)
 
     @property
     def registered(self):
@@ -140,24 +149,31 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
 
         :param source_domain: The caller's domain.
         :param source_token: The caller's token.
-        :param command: The command.
+        :param command: The command, as a string.
         :param args: The additional frames.
         :returns: The result.
         """
-        command_handler = self._command_handlers.get(command)
+        command_attrs = self._commands.get(command)
 
-        if not command_handler:
+        if command_attrs is None:
             raise CallError(
                 code=404,
                 message="Unknown command.",
             )
 
-        return await command_handler(
-            self,
-            source_domain,
-            source_token,
-            args,
-        )
+        command = getattr(self, command)
+        command_args = []
+
+        if command_attrs['use_context']:
+            context = ClientContext(
+                domain=source_domain,
+                token=source_token,
+            )
+            command_args.append(context)
+
+        command_args.extend(args)
+
+        return await command(*command_args)
 
     async def __register_loop(self):
         min_delay = 1
@@ -170,7 +186,10 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
             await self.client.wait_connection()
 
             try:
-                logger.debug("Registration for %s in progress...", self.domain)
+                logger.debug(
+                    "Registration for %s in progress...",
+                    self.context,
+                )
                 self.token = await asyncio.wait_for(
                     self.client._register(
                         domain=self.domain,

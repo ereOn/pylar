@@ -19,66 +19,79 @@ logger = main_logger.getChild('rpc_service')
 
 class RPCServiceMeta(ClientProxyMeta):
     def __new__(cls, name, bases, attrs):
-        method_handlers = {}
+        methods = {}
 
         for base in bases:
-            method_handlers.update(getattr(base, '_method_handlers', {}))
+            methods.update(getattr(base, '_methods', {}))
 
-        attrs.setdefault('_method_handlers', method_handlers)
+        attrs.setdefault('_methods', methods)
 
-        for field in attrs.values():
-            method_name = getattr(field, '_pylar_method_name', None)
+        for name, field in attrs.items():
+            method_attrs = getattr(field, '_pylar_method_attrs', None)
 
-            if method_name is not None:
-                method_handlers[method_name] = field
+            if method_attrs is not None:
+                methods[name] = method_attrs
 
         return super().__new__(cls, name, bases, attrs)
 
 
 class RPCService(Service, metaclass=RPCServiceMeta):
     @staticmethod
-    def method(name=None):
+    def method(use_context=False):
         """
         Register a method as a method handler.
 
-        :param name: The name of the method to register.
+        :param use_context: A boolean flag that indicates whether the specified
+            method expects a context as its first unnamed parameter.
         """
         def decorator(func):
-            func._pylar_method_name = (name or func.__name__).encode('utf-8')
+            func._pylar_method_attrs = dict(
+                use_context=use_context,
+            )
 
             return func
 
         return decorator
 
-    @Service.command('describe')
-    async def describe(self, source_domain, source_token, args):
+    @Service.command()
+    async def describe(self):
         description = {
             'methods': {
-                method_name.decode('utf-8'): serialize_function(method)
-                for method_name, method in self._method_handlers.items()
+                method_name: serialize_function(
+                    getattr(self, method_name),
+                    use_context=method_attrs['use_context'],
+                )
+                for method_name, method_attrs in self._methods.items()
             },
         }
 
         return [serialize(description)]
 
-    @Service.command('method_call')
-    async def method_call(self, source_domain, source_token, args):
-        method_name = args.pop(0)
-        method_args = deserialize(args.pop(0))
-        method_kwargs = deserialize(args.pop(0))
+    @Service.command(use_context=True)
+    async def method_call(
+        self,
+        context,
+        method_name,
+        method_args,
+        method_kwargs,
+    ):
+        method_name = method_name.decode('utf-8')
+        method_args = deserialize(method_args)
+        method_kwargs = deserialize(method_kwargs)
+        method_attrs = self._methods.get(method_name)
 
-        method = self._method_handlers.get(method_name)
-
-        if not method:
+        if method_attrs is None:
             raise CallError(
                 code=404,
                 message="No such method.",
             )
 
+        method = getattr(self, method_name)
+
+        if method_attrs['use_context']:
+            method_args.insert(0, context)
+
         result = await method(
-            self,
-            source_domain,
-            source_token,
             *method_args,
             **method_kwargs
         )
