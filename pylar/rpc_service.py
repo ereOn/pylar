@@ -11,6 +11,7 @@ from .common import (
 from .errors import CallError
 from .log import logger as main_logger
 from .client_proxy import ClientProxyMeta
+from .rpc import serialize_function
 from .service import Service
 
 logger = main_logger.getChild('rpc_service')
@@ -51,8 +52,14 @@ class RPCService(Service, metaclass=RPCServiceMeta):
 
     @Service.command('describe')
     async def describe(self, source_domain, source_token, args):
-        # TODO: Implement.
-        return [serialize({})]
+        description = {
+            'methods': {
+                method_name.decode('utf-8'): serialize_function(method)
+                for method_name, method in self._method_handlers.items()
+            },
+        }
+
+        return [serialize(description)]
 
     @Service.command('method_call')
     async def method_call(self, source_domain, source_token, args):
