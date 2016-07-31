@@ -4,6 +4,8 @@ A service class.
 
 import struct
 
+from asyncio import iscoroutinefunction
+
 from .common import (
     deserialize,
     serialize,
@@ -123,9 +125,15 @@ class RPCService(Service, metaclass=RPCServiceMeta):
         if method_attrs['use_context']:
             method_args.insert(0, context)
 
-        result = await method(
-            *method_args,
-            **method_kwargs
-        )
+        if iscoroutinefunction(method):
+            result = await method(
+                *method_args,
+                **method_kwargs
+            )
+        else:
+            result = method(
+                *method_args,
+                **method_kwargs
+            )
 
         return [serialize(result)]

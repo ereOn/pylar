@@ -138,7 +138,10 @@ class Broker(AsyncObject):
         self.add_task(self.__receiving_loop())
 
         def close_connection(conn):
-            self.__connections[conn.remote_identity].close()
+            connection = self.__connections.get(conn.remote_identity)
+
+            if connection:
+                connection.close()
 
         socket.on_connection_lost.connect(close_connection)
 

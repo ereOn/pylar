@@ -6,6 +6,7 @@ from itertools import islice
 from inspect import (
     Parameter,
     Signature,
+    getdoc,
     signature,
 )
 
@@ -61,12 +62,14 @@ def serialize_function(func, use_context):
                 None,
             )
         ],
+        'documentation': getdoc(func),
     }
 
 
 def deserialize_function(funcsig):
     parameters = [
         deserialize_parameter(parameter)
-        for parameter in funcsig['parameters']
+        for parameter in funcsig.get('parameters', [])
     ]
-    return Signature(parameters=parameters)
+    documentation = funcsig.get('documentation')
+    return Signature(parameters=parameters), documentation

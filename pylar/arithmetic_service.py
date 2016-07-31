@@ -17,5 +17,11 @@ class ArithmeticService(RPCService):
             **kwargs
         )
 
-    async def sum(self, *values):
+    def sum(self, *values):
+        """
+        Get the sum of the specified values.
+
+        :param values: Values to sum up.
+        :returns: The sum.
+        """
         return sum(values)

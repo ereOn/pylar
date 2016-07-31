@@ -6,7 +6,7 @@ import struct
 
 from io import BytesIO
 
-from .client_proxy import ClientProxy
+from .rpc_client_proxy import RPCClientProxy
 from .log import logger as main_logger
 from .security import (
     generate_hash,
@@ -16,7 +16,7 @@ from .security import (
 logger = main_logger.getChild('service')
 
 
-class Service(ClientProxy):
+class Service(RPCClientProxy):
     def __init__(self, *, shared_secret, name, **kwargs):
         super().__init__(
             domain=b'service/%s' % name.encode('utf-8'),

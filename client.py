@@ -23,13 +23,10 @@ async def run():
             try:
                 await client_proxy.wait_registered()
 
-                print(await client_proxy.describe(b'service/arithmetic'))
-                r = await client_proxy.method_call(
-                    target_domain=b'service/arithmetic',
-                    method='sum',
-                    args=[40, 2],
+                arithmetic_service = await client_proxy.get_rpc_service_proxy(
+                    b'service/arithmetic',
                 )
-                print(r)
+                print(await arithmetic_service.sum(2, 17))
             finally:
                 client.close()
                 await client.wait_closed()

@@ -8,6 +8,7 @@ from .common import (
     serialize,
 )
 from .log import logger as main_logger
+from .rpc import deserialize_function
 
 logger = main_logger.getChild('rpc_client_proxy')
 
@@ -54,3 +55,56 @@ class RPCClientProxy(ClientProxy):
         )
 
         return deserialize(result[0])
+
+    async def get_rpc_service_proxy(self, target_domain):
+        """
+        Get a RPC service proxy.
+
+        :param target_domain: The domain of the service to get a proxy for.
+        :returns: A RPC service proxy.
+        """
+        desc = await self.describe(target_domain)
+
+        class ServiceProxyMeta(type):
+            @staticmethod
+            def make_method(name, signature, documentation):
+                async def method(self, *args, **kwargs):
+                    bound_arguments = signature.bind(*args, **kwargs)
+
+                    return await self._client_proxy.method_call(
+                        target_domain=self._domain,
+                        method=name,
+                        args=bound_arguments.args,
+                        kwargs=bound_arguments.kwargs,
+                    )
+
+                method.__doc__ = documentation
+
+                return method
+
+            def __new__(cls, name, bases, attrs):
+                description = attrs.pop('description')
+
+                for name, method_desc in description['methods'].items():
+                    signature, documentation = deserialize_function(
+                        method_desc,
+                    )
+                    attrs[name] = cls.make_method(
+                        name=name,
+                        signature=signature,
+                        documentation=documentation,
+                    )
+
+                return super().__new__(cls, name, bases, attrs)
+
+        class ServiceProxy(object, metaclass=ServiceProxyMeta):
+            description = desc
+
+            def __init__(self, domain, client_proxy):
+                self._domain = domain
+                self._client_proxy = client_proxy
+
+        return ServiceProxy(
+            domain=target_domain,
+            client_proxy=self,
+        )
