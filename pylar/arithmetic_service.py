@@ -9,13 +9,8 @@ logger = main_logger.getChild('arithmetic_service')
 
 
 class ArithmeticService(RPCService):
+    name = 'arithmetic'
     exposed_methods = 'public'
-
-    def __init__(self, **kwargs):
-        super().__init__(
-            name='arithmetic',
-            **kwargs
-        )
 
     def sum(self, *values):
         """

@@ -7,10 +7,11 @@ import azmq
 import chromalog
 import click
 import entrypoints
+import importlib
 import logging
 import signal
 import sys
-import importlib
+import traceback
 
 from azmq import Context
 from base64 import b64decode
@@ -20,13 +21,15 @@ from .broker import Broker
 from .client import Client
 
 
-def setup_logging():
+def setup_logging(debug):
     chromalog.basicConfig(
-        level=logging.DEBUG,
+        level=logging.DEBUG if debug else logging.INFO,
         format='[%(levelname)s] %(message)s',
     )
-    logging.getLogger('asyncio').setLevel(logging.WARNING)
-    logging.getLogger('azmq').setLevel(logging.WARNING)
+
+    if debug:
+        logging.getLogger('asyncio').setLevel(logging.WARNING)
+        logging.getLogger('azmq').setLevel(logging.WARNING)
 
 
 if sys.platform == 'win32':
@@ -119,6 +122,13 @@ def check_shared_secret(shared_secret):
 
 @click.command()
 @click.option(
+    '-d',
+    '--debug',
+    is_flag=True,
+    default=None,
+    help="Enabled debug output.",
+)
+@click.option(
     '-s',
     '--shared-secret',
     default=None,
@@ -126,8 +136,8 @@ def check_shared_secret(shared_secret):
     "use too.",
 )
 @click.option('-l', '--listen', nargs=1, metavar='endpoint', multiple=True)
-def broker(shared_secret, listen):
-    setup_logging()
+def broker(debug, shared_secret, listen):
+    setup_logging(debug=debug)
 
     shared_secret = check_shared_secret(shared_secret)
 
@@ -173,6 +183,13 @@ def broker(shared_secret, listen):
 
 @click.command()
 @click.option(
+    '-d',
+    '--debug',
+    is_flag=True,
+    default=None,
+    help="Enabled debug output.",
+)
+@click.option(
     '-s',
     '--shared-secret',
     default=None,
@@ -181,8 +198,8 @@ def broker(shared_secret, listen):
 )
 @click.option('-c', '--connect', default=DEFAULT_ENDPOINT)
 @click.argument('names', nargs=-1, metavar='name...')
-def service(shared_secret, connect, names):
-    setup_logging()
+def service(debug, shared_secret, connect, names):
+    setup_logging(debug=debug)
 
     shared_secret = check_shared_secret(shared_secret)
 
@@ -215,22 +232,10 @@ def service(shared_secret, connect, names):
                 ),
                 err=True,
             )
-            continue
 
-        try:
-            client.register_client_proxy(service)
-        except Exception as ex:
-            click.echo(
-                click.style(
-                    "Unable to register service %s. Error was: %s" % (
-                        name,
-                        ex,
-                    ),
-                    fg="yellow",
-                ),
-                err=True,
-            )
-            service.close()
+            if debug:
+                traceback.print_exc()
+
         else:
             registered_services.append(name)
 

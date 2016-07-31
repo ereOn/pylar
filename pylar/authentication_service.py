@@ -11,12 +11,13 @@ logger = main_logger.getChild('authentication_service')
 
 
 class AuthenticationService(Service):
+    name = 'authentication'
+
     def __init__(self, **kwargs):
-        super().__init__(
-            name='authentication',
-            **kwargs
-        )
+        super().__init__(**kwargs)
+
         self._users = {}
+
         # TODO: Remove this.
         self.add_user('bob', 'password')
 

@@ -17,16 +17,15 @@ logger = main_logger.getChild('service')
 
 
 class Service(RPCClientProxy):
-    def __init__(self, *, shared_secret, name, **kwargs):
+    def __init__(self, *, shared_secret, **kwargs):
         super().__init__(
-            domain=b'service/%s' % name.encode('utf-8'),
+            domain=b'service/%s' % self.name.encode('utf-8'),
             credentials=self.get_credentials(
-                name.encode('utf-8'),
+                self.name.encode('utf-8'),
                 shared_secret,
             ),
             **kwargs
         )
-        self.name = name
         self.shared_secret = shared_secret
 
     @staticmethod
