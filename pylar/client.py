@@ -56,7 +56,7 @@ class Client(GenericClient):
         assert client_proxy in self.__client_proxies
 
         self.__client_proxies.remove(client_proxy)
-        self.__client_proxies_by_domain.remove(client_proxy.domain)
+        del self.__client_proxies_by_domain[client_proxy.domain]
 
         if not self.__client_proxies:
             self.__has_client_proxies.clear()

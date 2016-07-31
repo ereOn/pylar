@@ -4,6 +4,7 @@ A client proxy class.
 
 import asyncio
 
+from functools import partial
 from math import ceil
 
 from .async_object import AsyncObject
@@ -69,6 +70,9 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
 
         self.__token = None
         self.token = None
+
+        self.client.register_client_proxy(self)
+        self.add_cleanup(partial(self.client.unregister_client_proxy, self))
 
     @property
     def token(self):
