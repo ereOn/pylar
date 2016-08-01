@@ -20,17 +20,29 @@ logger = main_logger.getChild('client_proxy')
 class ClientProxyMeta(type):
     def __new__(cls, name, bases, attrs):
         commands = {}
+        notifications = {}
 
         for base in bases:
             commands.update(getattr(base, '_commands', {}))
+            notifications.update(getattr(base, '_notifications', {}))
 
         attrs.setdefault('_commands', commands)
+        attrs.setdefault('_notifications', notifications)
 
         for name, field in attrs.items():
             command_attrs = getattr(field, '_pylar_command_attrs', None)
 
             if command_attrs is not None:
                 commands[name] = command_attrs
+
+            notification_attrs = getattr(
+                field,
+                '_pylar_notification_attrs',
+                None,
+            )
+
+            if notification_attrs is not None:
+                notifications[name] = notification_attrs
 
         return super().__new__(cls, name, bases, attrs)
 
@@ -46,6 +58,23 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
         """
         def decorator(func):
             func._pylar_command_attrs = dict(
+                use_context=use_context,
+            )
+
+            return func
+
+        return decorator
+
+    @staticmethod
+    def notification_handler(use_context=False):
+        """
+        Register a method as a notification handler.
+
+        :param use_context: A boolean flag that indicates whether the specified
+            notification expects a context as its first unnamed parameter.
+        """
+        def decorator(func):
+            func._pylar_notification_attrs = dict(
                 use_context=use_context,
             )
 
@@ -162,7 +191,7 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
         if command_attrs is None:
             raise CallError(
                 code=404,
-                message="Unknown command.",
+                message="Unknown command: %s." % command,
             )
 
         command = getattr(self, command)
@@ -178,6 +207,65 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
         command_args.extend(args)
 
         return await command(*command_args)
+
+    async def notification(self, target_domain, type_, args=()):
+        await self.wait_registered()
+
+        client_proxy = self.client.get_client_proxy(target_domain)
+
+        # If we have a local client proxy that matches, we don't need to
+        # contact the broker about it and can make the request locally.
+        if client_proxy:
+            return await client_proxy.on_notification(
+                source_domain=self.domain,
+                source_token=self.token,
+                type_=type_,
+                args=args,
+            )
+        else:
+            return await self.client.notification(
+                source_domain=self.domain,
+                target_domain=target_domain,
+                type_=type_,
+                args=args,
+            )
+
+    async def on_notification(
+        self,
+        source_domain,
+        source_token,
+        type_,
+        args,
+    ):
+        """
+        Called whenever a notification is received.
+
+        :param source_domain: The caller's domain.
+        :param source_token: The caller's token.
+        :param type_: The type, as a string.
+        :param args: The additional frames.
+        """
+        notification_attrs = self._notifications.get(type_)
+
+        if notification_attrs is None:
+            raise CallError(
+                code=404,
+                message="Unknown notification: %s." % type_,
+            )
+
+        notification = getattr(self, type_)
+        notification_args = []
+
+        if notification_attrs['use_context']:
+            context = ClientContext(
+                domain=source_domain,
+                token=source_token,
+            )
+            notification_args.append(context)
+
+        notification_args.extend(args)
+
+        await notification(*notification_args)
 
     async def __register_loop(self):
         min_delay = 1

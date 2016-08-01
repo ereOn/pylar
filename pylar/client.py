@@ -103,6 +103,24 @@ class Client(GenericClient):
 
         return await self._request(frames)
 
+    async def notification(self, source_domain, target_domain, type_, args=()):
+        """
+        Send a generic notification to a specified domain.
+
+        :param source domain: The source domain.
+        :param target_domain: The target domain.
+        :param type_: The type.
+        :param args: A list of frames to pass.
+        """
+        frames = [
+            source_domain,
+            target_domain,
+            type_.encode('utf-8'),
+        ]
+        frames.extend(args)
+
+        return await self._notification(frames)
+
     # Protected methods.
 
     async def _read(self):
@@ -187,18 +205,30 @@ class Client(GenericClient):
 
         :param frames: The request frames.
         """
-        type_ = frames.pop(0)
+        try:
+            domain = frames.pop(0)
+            client_proxy = self.__client_proxies_by_domain.get(domain)
 
-        await self.on_notification(type_, frames)
+            if not client_proxy:
+                raise CallError(
+                    code=404,
+                    message="Client not found.",
+                )
 
-    async def on_notification(self, type_, args):
-        """
-        Called whenever a notification is received.
+            source_domain = frames.pop(0)
+            source_token = frames.pop(0)
+            type_ = frames.pop(0)
 
-        :param type_: The type of the notification.
-        :param args: The arguments.
-        """
-        logger.warning("Received unhandled notification of type %s.", type_)
+            await client_proxy.on_notification(
+                source_domain,
+                source_token,
+                type_.decode('utf-8'),
+                frames,
+            )
+        except Exception as ex:
+            logger.exception(
+                "Unexpected error while handling an incoming notification.",
+            )
 
     async def __reset(self):
         # Flush the outgoing queues.

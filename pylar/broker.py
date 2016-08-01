@@ -24,13 +24,23 @@ logger = main_logger.getChild('broker')
 
 
 class Connection(GenericClient):
-    def __init__(self, *, socket, identity, on_request_cb, timeout, **kwargs):
+    def __init__(
+        self,
+        *,
+        socket,
+        identity,
+        on_request_cb,
+        on_notification_cb,
+        timeout,
+        **kwargs
+    ):
         super().__init__(**kwargs)
         self.socket = socket
         self.identity = identity
         self.uid = uuid4().bytes
 
         self.__on_request_cb = on_request_cb
+        self.__on_notification_cb = on_notification_cb
 
         # The receiving queue.
         self.__queue = asyncio.Queue(loop=self.loop)
@@ -113,6 +123,37 @@ class Connection(GenericClient):
         """
         return await self.__on_request_cb(self, frames)
 
+    async def notification(self, domain, source_domain, source_token, args):
+        """
+        Send a generic notification from a specified domain.
+
+        :param domain: The domain for which the request is destined.
+        :param source_domain: The source domain in behalf of which the request
+            is made.
+        :param source_token: The token for the source domain.
+        :param args: A list of frames to pass.
+        :returns: The request result.
+        """
+        assert domain is not None
+
+        frames = [
+            domain,
+            source_domain,
+            source_token or b'',
+        ]
+        frames.extend(args)
+
+        return await self._notification(frames)
+
+    async def _on_notification(self, frames):
+        """
+        Called whenever a request is received.
+
+        :param frames: The request frames.
+        :returns: A list of frames that constitute the reply.
+        """
+        return await self.__on_notification_cb(self, frames)
+
 class Broker(AsyncObject):
     SERVICE_DOMAIN_PREFIX = b'service'
     SERVICE_AUTHENTICATION_DOMAIN = b'%s/%s' % (
@@ -183,6 +224,7 @@ class Broker(AsyncObject):
             socket=self.socket,
             identity=identity,
             on_request_cb=self.__process_request,
+            on_notification_cb=self.__process_notification,
             timeout=self.__connection_timeout,
             loop=self.loop,
         )
@@ -205,7 +247,7 @@ class Broker(AsyncObject):
         connections = self.__connections_by_domain.setdefault(domain, deque())
 
         if not connections:
-            logger.info("Domain %s is now available.", domain)
+            self.__on_domain_available(domain)
 
         connections.append(connection)
         connection.domains[domain] = token
@@ -227,9 +269,15 @@ class Broker(AsyncObject):
 
         if not connections:
             del self.__connections_by_domain[domain]
-            logger.info("Domain %s is now unavailable.", domain)
+            self.__on_domain_unavailable(domain)
 
         del connection.domains[domain]
+
+    def __on_domain_available(self, domain):
+        logger.info("Domain %s is now available.", domain)
+
+    def __on_domain_unavailable(self, domain):
+        logger.info("Domain %s is now unavailable.", domain)
 
     async def __receiving_loop(self):
         while True:
@@ -254,6 +302,34 @@ class Broker(AsyncObject):
             raise CallError(code=400, message="Bad request.")
 
         return await handler(connection, domain, frames)
+
+    async def __process_notification(self, connection, frames):
+        domain = frames.pop(0)
+
+        if domain not in connection.domains:
+            raise CallError(
+                code=412,
+                message="Not registered.",
+            )
+
+        target_domain = frames.pop(0)
+        connections = self.__connections_by_domain.get(target_domain)
+
+        if not connections:
+            raise CallError(
+                code=404,
+                message="No such domain: %s." % target_domain,
+            )
+
+        target_connection = connections[0]
+        connections.rotate(-1)
+
+        await target_connection.notification(
+            domain=target_domain,
+            source_domain=domain,
+            source_token=connection.domains.get(domain),
+            args=frames,
+        )
 
     async def __register_request(self, connection, domain, frames):
         credentials = frames.pop(0)
