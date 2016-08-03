@@ -105,6 +105,13 @@ def import_service(name):
         return entrypoints.get_single('pylar_services', name).load()
 
 
+def import_iservice(name):
+    if '.' in name:
+        return import_class(name)
+    else:
+        return entrypoints.get_single('pylar_iservices', name).load()
+
+
 def check_shared_secret(shared_secret):
     if shared_secret is None:
         click.echo(
@@ -274,5 +281,107 @@ def service(debug, shared_secret, connect, names):
 
     if registered_services:
         click.echo("Service stopped.")
+    else:
+        raise SystemExit(1)
+
+
+@click.command()
+@click.option(
+    '-d',
+    '--debug',
+    is_flag=True,
+    default=None,
+    help="Enabled debug output.",
+)
+@click.option(
+    '-s',
+    '--shared-secret',
+    default=None,
+    help="A shared secret in base64 format that the authentication services "
+    "use too.",
+)
+@click.option('-c', '--connect', default=[DEFAULT_ENDPOINT], multiple=True)
+@click.argument('names', nargs=-1, metavar='name...')
+def iservice(debug, shared_secret, connect, names):
+    setup_logging(debug=debug)
+
+    shared_secret = check_shared_secret(shared_secret)
+
+    loop = set_event_loop()
+    context = Context(loop=loop)
+
+    clients = []
+
+    for conn in connect:
+        socket = context.socket(azmq.DEALER)
+        socket.connect(conn)
+
+        client = Client(
+            socket=socket,
+            loop=loop,
+        )
+        clients.append(client)
+
+    registered_services = []
+
+    for name in names:
+        try:
+            iservice_class = import_iservice(name)
+            iservice = iservice_class(
+                clients=clients,
+                shared_secret=shared_secret,
+                loop=loop,
+            )
+
+        except Exception as ex:
+            click.echo(
+                click.style(
+                    "Unable to load i-service %s. Error was: %s." % (name, ex),
+                    fg="yellow",
+                ),
+                err=True,
+            )
+
+            if debug:
+                traceback.print_exc()
+
+        else:
+            registered_services.append(name)
+
+
+    if not registered_services:
+        click.echo(
+            click.style(
+                "No i-services were registered. Giving up.",
+                fg="red",
+            ),
+            err=True,
+        )
+        client.close()
+    else:
+        click.echo("I-Service(s) %s started and connected to %s." % (
+            ', '.join(registered_services),
+            ', '.join(connect),
+        ))
+
+    with allow_interruption(
+        (loop, iservice.close),
+    ):
+        try:
+            loop.run_until_complete(iservice.wait_closed())
+        except Exception as ex:
+            click.echo(
+                click.style(
+                    "Exception while running i-service: %s" % ex,
+                    fg='red',
+                ),
+                err=True,
+            )
+
+    context.close()
+    loop.run_until_complete(context.wait_closed())
+
+    if registered_services:
+        click.echo("I-Service stopped.")
     else:
         raise SystemExit(1)

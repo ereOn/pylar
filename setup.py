@@ -42,11 +42,15 @@ Pylar is an experiment on micro-services.
         'console_scripts': [
             'pylar-broker = pylar.entry_points:broker',
             'pylar-service = pylar.entry_points:service',
+            'pylar-iservice = pylar.entry_points:iservice',
         ],
         'pylar_services': [
             'authentication = '
             'pylar.authentication_service:AuthenticationService',
             'arithmetic = pylar.arithmetic_service:ArithmeticService',
+        ],
+        'pylar_iservices': [
+            'link = pylar.link_iservice:LinkIService',
         ],
     },
 )

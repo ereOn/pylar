@@ -19,6 +19,7 @@ class AuthenticationService(Service):
         self._users = {}
 
         # TODO: Remove this.
+        self.add_user('alice', 'password')
         self.add_user('bob', 'password')
 
     def add_user(self, username, password):

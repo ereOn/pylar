@@ -289,6 +289,14 @@ class Broker(AsyncObject):
 
             await connection.receive(frames)
 
+    def __get_connection_for(self, target_domain):
+        connections = self.__connections_by_domain.get(target_domain)
+
+        if connections:
+            target_connection = connections[0]
+            connections.rotate(-1)
+            return target_connection
+
     async def __process_request(self, connection, frames):
         command = frames.pop(0)
 
@@ -313,16 +321,13 @@ class Broker(AsyncObject):
             )
 
         target_domain = frames.pop(0)
-        connections = self.__connections_by_domain.get(target_domain)
+        target_connection = self.__get_connection_for(target_domain)
 
-        if not connections:
+        if not target_connection:
             raise CallError(
                 code=404,
                 message="No such domain: %s." % target_domain,
             )
-
-        target_connection = connections[0]
-        connections.rotate(-1)
 
         await target_connection.notification(
             domain=target_domain,
@@ -344,11 +349,11 @@ class Broker(AsyncObject):
 
             token = b''
         else:
-            connections = self.__connections_by_domain.get(
+            auth_connection = self.__get_connection_for(
                 self.SERVICE_AUTHENTICATION_DOMAIN,
             )
 
-            if not connections:
+            if not auth_connection:
                 logger.warning(
                     "Received authentication request for %s but no "
                     "authentication service is currently available !",
@@ -358,9 +363,6 @@ class Broker(AsyncObject):
                     code=503,
                     message="Authentication service unavailable.",
                 )
-
-            auth_connection = connections[0]
-            connections.rotate(-1)
 
             token, = await auth_connection.request(
                 domain=self.SERVICE_AUTHENTICATION_DOMAIN,
@@ -390,16 +392,13 @@ class Broker(AsyncObject):
             )
 
         target_domain = frames.pop(0)
-        connections = self.__connections_by_domain.get(target_domain)
+        target_connection = self.__get_connection_for(target_domain)
 
-        if not connections:
+        if not target_connection:
             raise CallError(
                 code=404,
                 message="No such domain: %s." % target_domain,
             )
-
-        target_connection = connections[0]
-        connections.rotate(-1)
 
         return await target_connection.request(
             domain=target_domain,
