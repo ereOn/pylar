@@ -18,11 +18,28 @@ class LinkService(Service):
         self.iservice = iservice
 
     @Service.command(use_context=True)
-    async def transmit(self, context, *frames):
+    async def dispatch(self, context, target_domain, *frames):
         """
         Transmit a message from one broker to another.
 
         :param context: The caller's context.
+        :param target_domain: The target domain.
         :param frames: The frames.
         """
-        return [b'']
+        service = await self.iservice.get_service_for(
+            target_domain=target_domain,
+            ignore_services=[self],
+        )
+
+        if not service:
+            raise CallError(
+                code=404,
+                message="No such domain: %s." % target_domain,
+            )
+
+        return await service.transmit(
+            target_domain=target_domain,
+            x_domain=context.domain,
+            x_token=context.token,
+            frames=frames,
+        )

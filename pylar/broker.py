@@ -154,11 +154,41 @@ class Connection(GenericClient):
         """
         return await self.__on_notification_cb(self, frames)
 
+
+class LinkConnection(object):
+    def __init__(self, connection):
+        self.connection = connection
+
+    async def request(self, domain, source_domain, source_token, args):
+        """
+        Send a generic request from a specified domain.
+
+        :param domain: The domain for which the request is destined.
+        :param source_domain: The source domain in behalf of which the request
+            is made.
+        :param source_token: The token for the source domain.
+        :param args: A list of frames to pass.
+        :returns: The request result.
+        """
+        return await self.connection.request(
+            domain=Broker.SERVICE_LINK_DOMAIN,
+            source_domain=source_domain,
+            source_token=source_token,
+            args=[
+                b'dispatch',
+                domain,
+            ] + list(args),
+        )
+
 class Broker(AsyncObject):
     SERVICE_DOMAIN_PREFIX = b'service'
     SERVICE_AUTHENTICATION_DOMAIN = b'%s/%s' % (
         SERVICE_DOMAIN_PREFIX,
         b'authentication',
+    )
+    SERVICE_LINK_DOMAIN = b'%s/%s' % (
+        SERVICE_DOMAIN_PREFIX,
+        b'link',
     )
 
     def __init__(self, *, socket, shared_secret, **kwargs):
@@ -173,6 +203,8 @@ class Broker(AsyncObject):
             b'register': self.__register_request,
             b'unregister': self.__unregister_request,
             b'request': self.__request_request,
+            b'query': self.__query_request,
+            b'transmit': self.__transmit_request,
         }
 
         self.add_cleanup(self.force_disconnections)
@@ -289,13 +321,24 @@ class Broker(AsyncObject):
 
             await connection.receive(frames)
 
-    def __get_connection_for(self, target_domain):
+    def __get_connection_for(self, target_domain, allow_link=True):
         connections = self.__connections_by_domain.get(target_domain)
 
         if connections:
             target_connection = connections[0]
             connections.rotate(-1)
             return target_connection
+
+        if allow_link:
+            link_connection = self.__get_connection_for(
+                self.SERVICE_LINK_DOMAIN,
+                allow_link=False,
+            )
+
+            if link_connection:
+                return LinkConnection(
+                    connection=link_connection,
+                )
 
     async def __process_request(self, connection, frames):
         command = frames.pop(0)
@@ -404,6 +447,54 @@ class Broker(AsyncObject):
             domain=target_domain,
             source_domain=domain,
             source_token=connection.domains[domain],
+            args=frames,
+        )
+
+    async def __query_request(self, connection, domain, frames):
+        if domain not in connection.domains:
+            raise CallError(
+                code=412,
+                message="Not registered.",
+            )
+
+        target_domain = frames.pop(0)
+        target_connection = self.__get_connection_for(
+            target_domain,
+            allow_link=False,
+        )
+
+        if not target_connection:
+            raise CallError(
+                code=404,
+                message="No such domain: %s." % target_domain,
+            )
+
+    async def __transmit_request(self, connection, domain, frames):
+        if domain not in connection.domains:
+            raise CallError(
+                code=412,
+                message="Not registered.",
+            )
+
+        target_domain = frames.pop(0)
+        target_connection = self.__get_connection_for(
+            target_domain,
+            allow_link=False,
+        )
+
+        if not target_connection:
+            raise CallError(
+                code=404,
+                message="No such domain: %s." % target_domain,
+            )
+
+        source_domain = frames.pop(0)
+        source_token = frames.pop(0)
+
+        return await target_connection.request(
+            domain=target_domain,
+            source_domain=source_domain,
+            source_token=source_token,
             args=frames,
         )
 

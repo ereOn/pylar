@@ -267,6 +267,38 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
 
         await notification(*notification_args)
 
+    async def query(self, target_domain):
+        """
+        Query the broker for a given domain.
+
+        :param target_domain: The target domain to query.
+        """
+        await self.wait_registered()
+
+        return await self.client.query(
+            source_domain=self.domain,
+            target_domain=target_domain,
+        )
+
+    async def transmit(self, target_domain, x_domain, x_token, frames):
+        """
+        Transmit a message to the broken on behalf of another domain.
+
+        :param target_domain: The target domain to transmit the message to.
+        :param x_domain: The impersonated domain.
+        :param x_token: The impersonated domain's token.
+        :param frames: The frames.
+        """
+        await self.wait_registered()
+
+        return await self.client.transmit(
+            source_domain=self.domain,
+            target_domain=target_domain,
+            x_domain=x_domain,
+            x_token=x_token,
+            frames=frames,
+        )
+
     async def __register_loop(self):
         min_delay = 1
         max_delay = 60

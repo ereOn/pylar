@@ -121,6 +121,41 @@ class Client(GenericClient):
 
         return await self._notification(frames)
 
+    async def query(self, source_domain, target_domain):
+        """
+        Query the broker for a given domain.
+
+        :param domain: The domain that queries.
+        :param target_domain: The target domain to query.
+        """
+        frames = [b'query', source_domain, target_domain]
+
+        return await self._request(frames)
+
+    async def transmit(
+        self,
+        source_domain,
+        target_domain,
+        x_domain,
+        x_token,
+        frames,
+    ):
+        """
+        Query the broker for a given domain.
+
+        :param domain: The domain that queries.
+        :param target_domain: The target domain to query.
+        """
+        frames = [
+            b'transmit',
+            source_domain,
+            target_domain,
+            x_domain,
+            x_token,
+        ] + list(frames)
+
+        return await self._request(frames)
+
     # Protected methods.
 
     async def _read(self):
