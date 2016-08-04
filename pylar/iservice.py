@@ -24,7 +24,3 @@ class IService(AsyncObject):
             )
             for client in self.clients
         ]
-
-        for client in self.clients:
-            self.add_cleanup(client.close)
-            self.add_cleanup(client.wait_closed)

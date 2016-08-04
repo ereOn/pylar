@@ -311,6 +311,7 @@ def iservice(debug, shared_secret, connect, names):
     context = Context(loop=loop)
 
     clients = []
+    iservices = []
 
     for conn in connect:
         socket = context.socket(azmq.DEALER)
@@ -332,6 +333,7 @@ def iservice(debug, shared_secret, connect, names):
                 shared_secret=shared_secret,
                 loop=loop,
             )
+            iservices.append(iservice)
 
         except Exception as ex:
             click.echo(
@@ -364,11 +366,18 @@ def iservice(debug, shared_secret, connect, names):
             ', '.join(connect),
         ))
 
+    def close():
+        for iservice in iservices:
+            iservice.close()
+
+        for client in clients:
+            client.close()
+
     with allow_interruption(
-        (loop, iservice.close),
+        (loop, close),
     ):
         try:
-            loop.run_until_complete(iservice.wait_closed())
+            loop.run_until_complete(client.wait_closed())
         except Exception as ex:
             click.echo(
                 click.style(
