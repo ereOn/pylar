@@ -246,21 +246,23 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
         :param args: The additional frames.
         """
         notification_attrs = self._notifications.get(type_)
+        context = ClientContext(
+            domain=source_domain,
+            token=source_token,
+        )
 
         if notification_attrs is None:
-            raise CallError(
-                code=404,
-                message="Unknown notification: %s." % type_,
+            logger.warning(
+                "Ignoring unknown notification '%s' from %s.",
+                type_,
+                context,
             )
+            return
 
         notification = getattr(self, type_)
         notification_args = []
 
         if notification_attrs['use_context']:
-            context = ClientContext(
-                domain=source_domain,
-                token=source_token,
-            )
             notification_args.append(context)
 
         notification_args.extend(args)
@@ -294,6 +296,26 @@ class ClientProxy(AsyncObject, metaclass=ClientProxyMeta):
         return await self.client.transmit(
             source_domain=self.domain,
             target_domain=target_domain,
+            x_domain=x_domain,
+            x_token=x_token,
+            frames=frames,
+        )
+
+    async def notification_transmit(
+        self,
+        target_domain,
+        type_,
+        x_domain,
+        x_token,
+        frames,
+    ):
+        """
+        Send a notification on behalf of another domain.
+        """
+        return await self.client.notification_transmit(
+            source_domain=self.domain,
+            target_domain=target_domain,
+            type_=type_,
             x_domain=x_domain,
             x_token=x_token,
             frames=frames,

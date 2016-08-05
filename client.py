@@ -17,7 +17,6 @@ async def run(domain, endpoint):
                     domain=domain,
                     credentials=b'password',
                 )
-
                 try:
                     arithmetic_service = await client_proxy.get_rpc_service_proxy(
                         b'service/arithmetic',
@@ -25,6 +24,9 @@ async def run(domain, endpoint):
                     print(domain, await arithmetic_service.sum(2, 17))
                 except Exception as ex:
                     print(domain, ex)
+
+                await client_proxy.notification(b'user/bob', 'hello')
+                await asyncio.sleep(1)
 
 
 if __name__ == '__main__':

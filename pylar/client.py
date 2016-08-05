@@ -113,9 +113,9 @@ class Client(GenericClient):
         :param args: A list of frames to pass.
         """
         frames = [
+            type_.encode('utf-8'),
             source_domain,
             target_domain,
-            type_.encode('utf-8'),
         ]
         frames.extend(args)
 
@@ -141,10 +141,7 @@ class Client(GenericClient):
         frames,
     ):
         """
-        Query the broker for a given domain.
-
-        :param domain: The domain that queries.
-        :param target_domain: The target domain to query.
+        Perform a request on behalf of another domain.
         """
         frames = [
             b'transmit',
@@ -155,6 +152,25 @@ class Client(GenericClient):
         ] + list(frames)
 
         return await self._request(frames)
+
+    async def notification_transmit(
+        self,
+        source_domain,
+        target_domain,
+        type_,
+        x_domain,
+        x_token,
+        frames,
+    ):
+        """
+        Send a notification on behalf of another domain.
+        """
+        return await self.notification(
+            source_domain,
+            target_domain,
+            'transmit',
+            [type_, x_domain, x_token] + list(frames),
+        )
 
     # Protected methods.
 

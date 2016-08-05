@@ -4,7 +4,9 @@ A link inter-service class.
 
 import asyncio
 
+from cachetools import TTLCache
 from collections import deque
+from functools import partial
 
 from .log import logger as main_logger
 from .iservice import IService
@@ -18,43 +20,47 @@ class LinkIService(IService):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.__services_by_domain = {}
+        self.__services_by_domain = TTLCache(maxsize=100, ttl=5)
 
     async def get_service_for(self, target_domain, ignore_services):
         services = self.__services_by_domain.get(target_domain)
 
         if services:
-            # TODO: Make the cache non-permanent.
             services.rotate(-1)
             return services[0]
+        else:
+            services = []
 
         event = asyncio.Event(loop=self.loop)
 
-        async def check_domain(service, target_domain):
-            try:
-                await service.query(target_domain)
-                return service
-            except Exception:
-                logger.exception("Query failed")
-                return
+        queries = {
+            service: asyncio.ensure_future(
+                service.query(target_domain),
+                loop=self.loop,
+            )
+            for service in self.services
+            if not service in ignore_services
+        }
 
-        # TODO: Better wait mechanisms in case of timeout, error, succes, ...
-        # Basically, we should wait for the first success only except if
-        # everything failed.
-        done, pending = await asyncio.wait(
-            [
-                check_domain(service, target_domain)
-                for service in self.services
-                if service not in ignore_services
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-            loop=self.loop,
-        )
+        def query_done(service, task):
+            queries.pop(service)
 
-        for task in pending:
+            if not task.cancelled() and not task.exception():
+                services.append(service)
+
+        for service, task in queries.items():
+            task.add_done_callback(partial(query_done, service))
+
+        while queries and not services:
+            await asyncio.wait(
+                queries.values(),
+                return_when=asyncio.FIRST_COMPLETED,
+                loop=self.loop,
+            )
+
+        for task in queries.values():
             task.cancel()
 
-        if done:
-            services = await asyncio.gather(*list(done), loop=self.loop)
+        if services:
             self.__services_by_domain[target_domain] = deque(services)
             return services[0]

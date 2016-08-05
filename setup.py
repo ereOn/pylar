@@ -23,6 +23,7 @@ Pylar is an experiment on micro-services.
     install_requires=[
         'aiohttp>=0.22.4,<1',
         'azmq[csodium]>=1.0.6,<2',
+        'cachetools==1.1.6',
         'chromalog>=1.0.5,<2',
         'click>=6.6,<7',
         'csodium>=0.0.2',

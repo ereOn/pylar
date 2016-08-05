@@ -43,3 +43,33 @@ class LinkService(Service):
             x_token=context.token,
             frames=frames,
         )
+
+    @Service.notification_handler(use_context=True)
+    async def notification_dispatch(
+        self,
+        context,
+        type_,
+        target_domain,
+        *frames
+    ):
+        service = await self.iservice.get_service_for(
+            target_domain=target_domain,
+            ignore_services=[self],
+        )
+
+        if not service:
+            logger.warning(
+                "Dropping notification '%s' from %s to unknown service %s.",
+                type_.decode('utf-8'),
+                context,
+                target_domain.decode('utf-8'),
+            )
+            return
+
+        await service.notification_transmit(
+            target_domain=target_domain,
+            type_=type_,
+            x_domain=context.domain,
+            x_token=context.token,
+            frames=frames,
+        )

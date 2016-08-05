@@ -123,7 +123,14 @@ class Connection(GenericClient):
         """
         return await self.__on_request_cb(self, frames)
 
-    async def notification(self, domain, source_domain, source_token, args):
+    async def notification(
+        self,
+        domain,
+        source_domain,
+        source_token,
+        type_,
+        args,
+    ):
         """
         Send a generic notification from a specified domain.
 
@@ -131,6 +138,7 @@ class Connection(GenericClient):
         :param source_domain: The source domain in behalf of which the request
             is made.
         :param source_token: The token for the source domain.
+        :param type_: The notification type.
         :param args: A list of frames to pass.
         :returns: The request result.
         """
@@ -140,6 +148,7 @@ class Connection(GenericClient):
             domain,
             source_domain,
             source_token or b'',
+            type_,
         ]
         frames.extend(args)
 
@@ -176,6 +185,38 @@ class LinkConnection(object):
             source_token=source_token,
             args=[
                 b'dispatch',
+                domain,
+            ] + list(args),
+        )
+
+    async def notification(
+        self,
+        domain,
+        source_domain,
+        source_token,
+        type_,
+        args,
+    ):
+        """
+        Send a generic notification from a specified domain.
+
+        :param domain: The domain for which the request is destined.
+        :param source_domain: The source domain in behalf of which the request
+            is made.
+        :param source_token: The token for the source domain.
+        :param type_: The notification type.
+        :param args: A list of frames to pass.
+        :returns: The request result.
+        """
+        assert domain is not None
+
+        return await self.connection.notification(
+            domain=Broker.SERVICE_LINK_DOMAIN,
+            source_domain=source_domain,
+            source_token=source_token,
+            type_=b'notification_dispatch',
+            args=[
+                type_,
                 domain,
             ] + list(args),
         )
@@ -355,6 +396,7 @@ class Broker(AsyncObject):
         return await handler(connection, domain, frames)
 
     async def __process_notification(self, connection, frames):
+        type_ = frames.pop(0)
         domain = frames.pop(0)
 
         if domain not in connection.domains:
@@ -372,10 +414,19 @@ class Broker(AsyncObject):
                 message="No such domain: %s." % target_domain,
             )
 
+        if type_ == b'transmit':
+            type_ = frames.pop(0)
+            source_domain = frames.pop(0)
+            source_token = frames.pop(0)
+        else:
+            source_domain = domain
+            source_token = connection.domains.get(domain)
+
         await target_connection.notification(
             domain=target_domain,
-            source_domain=domain,
-            source_token=connection.domains.get(domain),
+            source_domain=source_domain,
+            source_token=source_token,
+            type_=type_,
             args=frames,
         )
 
